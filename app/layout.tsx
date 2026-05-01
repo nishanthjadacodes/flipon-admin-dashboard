@@ -1,4 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -11,12 +13,18 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata = {
-  title: "Admin Dashboard - Platform Control Center",
-  description: "Central operating system for platform management and operations",
+export const metadata: Metadata = {
+  title: "FliponeX Admin Console",
+  description:
+    "India's 1 Doorstep Digital Service — central operating system for FliponeX platform operations.",
+  icons: {
+    icon: '/fliponex-logo.jpeg',
+    shortcut: '/fliponex-logo.jpeg',
+    apple: '/fliponex-logo.jpeg',
+  },
 };
 
-export default function RootLayout({ children }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en"

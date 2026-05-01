@@ -1,0 +1,994 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { ordersAPI, agentsAPI, documentsAPI } from '@/utils/api';
+import { CAP, can } from '@/utils/rbac';
+import { downloadCsv } from '@/utils/csv';
+
+// Backend status values come from the Booking model.
+type OrderStatus =
+  | 'pending'
+  | 'assigned'
+  | 'accepted'
+  | 'documents_collected'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled';
+
+interface StatusEntry {
+  key: OrderStatus;
+  label: string;
+}
+
+const STATUS_ORDER: StatusEntry[] = [
+  { key: 'pending', label: 'Order Received' },
+  { key: 'assigned', label: 'Representative Assigned' },
+  { key: 'accepted', label: 'Representative Accepted' },
+  { key: 'documents_collected', label: 'Documents Collected' },
+  { key: 'in_progress', label: 'In Progress' },
+  { key: 'completed', label: 'Completed' },
+];
+
+const statusTone: Record<OrderStatus, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  assigned: 'bg-indigo-100 text-indigo-800',
+  accepted: 'bg-blue-100 text-blue-800',
+  documents_collected: 'bg-purple-100 text-purple-800',
+  in_progress: 'bg-blue-100 text-blue-800',
+  completed: 'bg-green-100 text-green-800',
+  cancelled: 'bg-red-100 text-red-800',
+};
+
+interface CustomerLite {
+  name?: string;
+  mobile?: string;
+  email?: string;
+}
+
+interface AgentLite {
+  id: string;
+  name?: string;
+  mobile?: string;
+  rating?: number;
+  online_status?: boolean;
+  total_jobs_completed?: number;
+  is_kyc_verified?: boolean;
+}
+
+interface OrderRecord {
+  id: string;
+  ref?: string;
+  status?: OrderStatus | string;
+  booking_type?: 'consumer' | 'industrial' | string;
+  created_at?: string;
+  customer?: CustomerLite;
+  customer_name?: string;
+  customer_mobile?: string;
+  service?: { name?: string };
+  agent?: AgentLite;
+  final_price?: number;
+  price_quoted?: number;
+  payment_status?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  address?: string;
+  notes?: string;
+  cancellation_reason?: string;
+  cancelled_at?: string;
+}
+
+interface DocumentRecord {
+  id: string;
+  document_type?: string;
+  file_name?: string;
+  file_url?: string;
+  mime_type?: string;
+  is_verified?: boolean;
+  notes?: string;
+}
+
+const isImageDoc = (d: DocumentRecord): boolean => {
+  if (d.mime_type && d.mime_type.startsWith('image/')) return true;
+  const url = d.file_url || d.file_name || '';
+  return /\.(jpe?g|png|webp|gif|bmp|heic|heif)(\?|$)/i.test(url);
+};
+
+// Inline thumbnail with onError fallback. If the image 404s (file gone
+// from Render's disk) we swap to a 📄 tile so the row doesn't show a
+// broken-image icon. Click opens the full preview modal regardless.
+function DocThumbnail({
+  doc,
+  onClick,
+}: {
+  doc: DocumentRecord;
+  onClick: () => void;
+}) {
+  const [failed, setFailed] = useState<boolean>(false);
+  if (failed || !doc.file_url) {
+    return (
+      <button
+        onClick={onClick}
+        className="w-20 h-20 rounded border border-gray-200 bg-gray-50 flex items-center justify-center text-3xl hover:bg-gray-100"
+        title="Image unavailable — click for details"
+      >
+        📄
+      </button>
+    );
+  }
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img
+      src={doc.file_url}
+      alt={doc.document_type || 'document'}
+      onClick={onClick}
+      onError={() => setFailed(true)}
+      className="w-20 h-20 rounded object-cover border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity bg-gray-50"
+    />
+  );
+}
+
+// Full-screen modal for previewing a doc image. Tracks loading/error state
+// so the user gets a spinner while loading and a useful message (with the
+// failing URL + Open-in-new-tab fallback) instead of a black void when the
+// image 404s — which is what was happening when Render's ephemeral disk
+// wiped older uploads.
+function DocPreviewOverlay({
+  doc,
+  onClose,
+}: {
+  doc: DocumentRecord;
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const url = doc.file_url || '';
+
+  // Reset state whenever the previewed doc changes (admin clicks a different
+  // thumbnail without closing the modal first).
+  useEffect(() => {
+    setState('loading');
+  }, [url]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-5xl max-h-full bg-white rounded-lg overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 flex-shrink-0">
+          <p className="text-sm font-semibold text-gray-900 truncate">
+            {(doc.document_type || 'document').replace(/_/g, ' ')}
+            {doc.file_name ? ` · ${doc.file_name}` : ''}
+          </p>
+          <div className="flex items-center gap-2">
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Open in new tab
+            </a>
+            <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-900 text-xl leading-none px-2"
+              aria-label="Close preview"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        <div className="relative bg-gray-50 flex items-center justify-center min-h-[300px] max-h-[80vh]">
+          {/* Hidden image — we render it always so onLoad/onError fire, but
+              hide it visually until it succeeds. Prevents the broken-image
+              icon flash. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt="Document preview"
+            onLoad={() => setState('loaded')}
+            onError={() => setState('error')}
+            className={`max-w-full max-h-[80vh] object-contain ${
+              state === 'loaded' ? '' : 'invisible absolute'
+            }`}
+          />
+          {state === 'loading' && (
+            <div className="flex flex-col items-center text-gray-600">
+              <svg className="animate-spin h-8 w-8 text-blue-500" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25" />
+                <path
+                  d="M4 12a8 8 0 018-8"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                  fill="none"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <p className="text-sm mt-3">Loading image…</p>
+            </div>
+          )}
+          {state === 'error' && (
+            <div className="flex flex-col items-center text-center px-6 py-10 text-gray-700">
+              <span className="text-4xl">⚠️</span>
+              <p className="mt-3 font-semibold text-gray-900">Could not load image</p>
+              <p className="mt-1 text-sm text-gray-600 max-w-md">
+                The file may have been removed from storage. New uploads will persist
+                once Cloudinary is configured on the backend.
+              </p>
+              <p className="mt-3 text-[11px] text-gray-400 break-all max-w-md">{url}</p>
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+              >
+                Open in new tab
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const refOf = (o: OrderRecord): string => o.ref || `ORD-${String(o.id).padStart(4, '0')}`;
+const money = (n: unknown): string => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+
+function StagePipeline({ status }: { status?: string }) {
+  const currentIdx = STATUS_ORDER.findIndex((s) => s.key === status);
+  return (
+    <ol className="space-y-2">
+      {STATUS_ORDER.map((s, idx) => {
+        const done = idx <= currentIdx;
+        return (
+          <li key={s.key} className="flex items-center space-x-3">
+            <span
+              className={`inline-flex w-5 h-5 items-center justify-center rounded-full text-[10px] font-bold
+                ${done ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-500'}`}
+            >
+              {idx + 1}
+            </span>
+            <span className={`text-sm ${done ? 'text-gray-900' : 'text-gray-500'}`}>{s.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function DocumentsReview({ bookingId, canVerify }: { bookingId: string; canVerify: boolean }) {
+  const [docs, setDocs] = useState<DocumentRecord[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<DocumentRecord | null>(null);
+
+  const load = async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await ordersAPI.getDocuments(bookingId);
+      setDocs(Array.isArray(data) ? (data as DocumentRecord[]) : []);
+    } catch (e: any) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingId]);
+
+  const act = async (doc: DocumentRecord, status: 'approved' | 'rejected'): Promise<void> => {
+    let notes = '';
+    if (status === 'rejected') {
+      notes = prompt('Reason for rejection:') || '';
+      if (!notes.trim()) return;
+    }
+    setBusyId(doc.id);
+    try {
+      const updated = await documentsAPI.verify(doc.id, { status, notes });
+      setDocs((prev) =>
+        prev.map((d) =>
+          d.id === doc.id
+            ? {
+                ...d,
+                ...(updated && typeof updated === 'object' ? (updated as Partial<DocumentRecord>) : {}),
+                is_verified: status === 'approved',
+                notes: notes || d.notes,
+              }
+            : d,
+        ),
+      );
+    } catch (e: any) {
+      alert(`Document update failed: ${e.message}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-lg font-semibold text-gray-900">Documents</h3>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+        >
+          Refresh
+        </button>
+      </div>
+      {loading ? (
+        <p className="text-sm text-gray-500">Loading documents…</p>
+      ) : error ? (
+        <p className="text-sm text-red-700">Failed: {error}</p>
+      ) : docs.length === 0 ? (
+        <p className="text-sm text-gray-500">No documents uploaded for this booking yet.</p>
+      ) : (
+        <ul className="space-y-3">
+          {docs.map((d) => {
+            const pending = !d.is_verified;
+            const isImage = isImageDoc(d);
+            return (
+              <li key={d.id} className="border border-gray-200 rounded-lg p-3">
+                <div className="flex items-start gap-3">
+                  {/* Inline thumbnail — click for full preview. Falls back to
+                      a 📄 tile for PDFs / non-image files OR when an image
+                      fails to load (Render's ephemeral disk wiped it). */}
+                  {isImage && d.file_url ? (
+                    <DocThumbnail doc={d} onClick={() => setPreviewDoc(d)} />
+                  ) : (
+                    <button
+                      onClick={() => d.file_url && window.open(d.file_url, '_blank')}
+                      disabled={!d.file_url}
+                      className="w-20 h-20 rounded border border-gray-200 bg-gray-50 flex items-center justify-center text-3xl hover:bg-gray-100 disabled:opacity-50"
+                      title="Open file"
+                    >
+                      📄
+                    </button>
+                  )}
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-900">
+                          {(d.document_type || 'document').replace(/_/g, ' ')}
+                        </p>
+                        <p className="text-xs text-gray-500 truncate">{d.file_name}</p>
+                        {d.notes && <p className="text-xs text-gray-500 mt-1">Note: {d.notes}</p>}
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          d.is_verified
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-yellow-100 text-yellow-800'
+                        }`}
+                      >
+                        {d.is_verified ? 'approved' : 'pending'}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      {d.file_url && (
+                        <button
+                          onClick={() => (isImage ? setPreviewDoc(d) : window.open(d.file_url, '_blank'))}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          {isImage ? 'Preview' : 'Open file'}
+                        </button>
+                      )}
+                      {canVerify && (
+                        <>
+                          {pending && (
+                            <button
+                              disabled={busyId === d.id}
+                              onClick={() => act(d, 'approved')}
+                              className="ml-auto px-2 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                              Approve
+                            </button>
+                          )}
+                          <button
+                            disabled={busyId === d.id}
+                            onClick={() => act(d, 'rejected')}
+                            className={`${pending ? '' : 'ml-auto'} px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50 disabled:opacity-50`}
+                          >
+                            {pending ? 'Reject' : 'Revoke'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* Full-screen image preview modal — opens when admin clicks a thumbnail
+          or the Preview link. Click backdrop or ✕ to dismiss. */}
+      {previewDoc && previewDoc.file_url && (
+        <DocPreviewOverlay
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+type CheckKey = 'identity' | 'contact' | 'address' | 'payment' | 'scope';
+
+interface ChecklistItem {
+  key: CheckKey;
+  label: string;
+}
+
+interface VerificationChecklistProps {
+  checks: Partial<Record<CheckKey, boolean>>;
+  onToggle: (key: CheckKey) => void;
+  disabled?: boolean;
+}
+
+function VerificationChecklist({ checks, onToggle, disabled }: VerificationChecklistProps) {
+  const items: ChecklistItem[] = [
+    { key: 'identity', label: 'Customer identity confirmed' },
+    { key: 'contact', label: 'Phone / email reachable' },
+    { key: 'address', label: 'Service address validated' },
+    { key: 'payment', label: 'Payment method confirmed' },
+    { key: 'scope', label: 'Service scope & price agreed' },
+  ];
+  return (
+    <div className="space-y-2">
+      {items.map((it) => (
+        <label key={it.key} className="flex items-center space-x-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!checks[it.key]}
+            onChange={() => onToggle(it.key)}
+            disabled={disabled}
+            className="h-4 w-4 text-blue-600 rounded"
+          />
+          <span className={`text-sm ${checks[it.key] ? 'text-gray-900' : 'text-gray-600'}`}>
+            {it.label}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+interface AssignmentLogEntry {
+  agentId: string;
+  agentName?: string;
+  reason: string;
+  at: string;
+}
+
+export interface OrderManagementProps {
+  userRole?: string;
+}
+
+export default function OrderManagement({ userRole = 'super_admin' }: OrderManagementProps) {
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [agents, setAgents] = useState<AgentLite[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState<'all' | OrderStatus>('all');
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [verifyState, setVerifyState] = useState<Record<string, Partial<Record<CheckKey, boolean>>>>({});
+  const [assignmentReason, setAssignmentReason] = useState<string>('');
+  const [assignmentLog, setAssignmentLog] = useState<Record<string, AssignmentLogEntry[]>>({});
+
+  const canVerify = can(userRole, CAP.ORDER_VERIFY);
+  const canAssign = can(userRole, CAP.ORDER_ASSIGN);
+  const canCancel = can(userRole, CAP.ORDER_CANCEL);
+  const canReschedule = can(userRole, CAP.ORDER_RESCHEDULE);
+  const readOnly = !canVerify && !canAssign && !canCancel && !canReschedule;
+  const b2bOnly = can(userRole, CAP.SCOPE_B2B_ONLY);
+  const canExport = userRole === 'super_admin';
+
+  const exportBookings = (): void => {
+    downloadCsv<OrderRecord>(`bookings-${new Date().toISOString().slice(0, 10)}.csv`, orders, [
+      { key: 'id', label: 'booking_id' },
+      { key: 'ref', label: 'ref', value: (o) => refOf(o) },
+      { key: 'status', label: 'status' },
+      { key: 'booking_type', label: 'type' },
+      { key: 'created_at', label: 'created_at' },
+      {
+        key: 'customer',
+        label: 'customer_name',
+        value: (o) => o.customer?.name || o.customer_name || '',
+      },
+      {
+        key: 'customer_mobile',
+        label: 'customer_mobile',
+        value: (o) => o.customer?.mobile || o.customer_mobile || '',
+      },
+      { key: 'service', label: 'service', value: (o) => o.service?.name || '' },
+      { key: 'agent', label: 'agent', value: (o) => o.agent?.name || '' },
+      { key: 'final_price', label: 'final_price' },
+      { key: 'price_quoted', label: 'price_quoted' },
+      { key: 'payment_status', label: 'payment_status' },
+    ]);
+  };
+
+  useEffect(() => {
+    const load = async (silent = false): Promise<void> => {
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const params: Record<string, unknown> = { page: 1, limit: 50 };
+        if (filterStatus !== 'all') params.status = filterStatus;
+        if (b2bOnly) params.booking_type = 'industrial';
+        const [ordersData, agentsData] = await Promise.all([
+          ordersAPI.getAll(params),
+          // Show ALL active reps in the dropdown — KYC status is rendered
+          // as a badge inside each option so the admin can see at a glance
+          // who's fully verified vs pending. Filtering only-verified hid
+          // legitimate reps during testing/demo.
+          canAssign
+            ? agentsAPI.getAll({ status: 'active' })
+            : Promise.resolve([]),
+        ]);
+        setOrders(Array.isArray(ordersData) ? (ordersData as OrderRecord[]) : []);
+        setAgents(Array.isArray(agentsData) ? (agentsData as AgentLite[]) : []);
+      } catch (e: any) {
+        if (!silent) setError(e.message);
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    };
+    load();
+    // Auto-refresh every 20s so newly-created customer bookings show up
+    // without the admin having to hit refresh. `silent: true` keeps the
+    // existing list visible during the refetch (no spinner flash).
+    const pollId = setInterval(() => load(true), 20_000);
+    return () => clearInterval(pollId);
+  }, [filterStatus, b2bOnly, canAssign]);
+
+  const filteredOrders = useMemo<OrderRecord[]>(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (!q) return true;
+      return (
+        refOf(o).toLowerCase().includes(q) ||
+        (o.customer?.name || '').toLowerCase().includes(q) ||
+        (o.service?.name || '').toLowerCase().includes(q)
+      );
+    });
+  }, [orders, searchTerm]);
+
+  const selected = orders.find((o) => o.id === selectedId) || null;
+
+  // Scroll the detail panel into view after React commits the new content.
+  useEffect(() => {
+    if (!selectedId || typeof document === 'undefined') return;
+    const panel = document.getElementById('order-detail-panel');
+    if (!panel) return;
+    requestAnimationFrame(() => {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [selectedId]);
+  const checks: Partial<Record<CheckKey, boolean>> = (selected && verifyState[selected.id]) || {};
+  const allVerified =
+    !!selected &&
+    (['identity', 'contact', 'address', 'payment', 'scope'] as CheckKey[]).every((k) => checks[k]);
+
+  const toggleCheck = (key: CheckKey): void => {
+    if (!selected) return;
+    setVerifyState((prev) => ({
+      ...prev,
+      [selected.id]: { ...(prev[selected.id] || {}), [key]: !(prev[selected.id] || {})[key] },
+    }));
+  };
+
+  const handleAssign = async (agentId: string): Promise<void> => {
+    if (!selected || !agentId) return;
+    const reason = assignmentReason.trim();
+    if (!reason) {
+      alert('Please enter a reason for this assignment.');
+      return;
+    }
+    if (selected.status && selected.status !== 'pending') {
+      const confirmOverride = confirm(
+        `This booking is already ${selected.status.replace('_', ' ')}.\n\n` +
+          `The backend only accepts assignment when status is "pending". ` +
+          `Continue anyway?`,
+      );
+      if (!confirmOverride) return;
+    }
+    const agent = agents.find((a) => String(a.id) === String(agentId));
+    try {
+      await ordersAPI.assignAgent(selected.id, agentId);
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === selected.id ? { ...o, agent: agent || o.agent, status: 'assigned' } : o,
+        ),
+      );
+      setAssignmentLog((prev) => ({
+        ...prev,
+        [selected.id]: [
+          ...(prev[selected.id] || []),
+          { agentId, agentName: agent?.name, reason, at: new Date().toISOString() },
+        ],
+      }));
+      setAssignmentReason('');
+    } catch (e: any) {
+      alert(`Assignment failed: ${e.message}`);
+    }
+  };
+
+  const handleReschedule = async (): Promise<void> => {
+    if (!selected) return;
+    const preferred_date = prompt(
+      'New date (YYYY-MM-DD). Leave blank to keep existing.',
+      selected.preferred_date || '',
+    );
+    const preferred_time = prompt(
+      'New time window (e.g. "14:00 - 15:00"). Leave blank to keep existing.',
+      selected.preferred_time || '',
+    );
+    if (!preferred_date && !preferred_time) return;
+    const reason = prompt('Reason for reschedule (optional):') || '';
+    try {
+      const updated = await ordersAPI.reschedule(selected.id, {
+        preferred_date: preferred_date || undefined,
+        preferred_time: preferred_time || undefined,
+        reason,
+      });
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === selected.id
+            ? { ...o, ...((updated || {}) as Partial<OrderRecord>) }
+            : o,
+        ),
+      );
+    } catch (e: any) {
+      alert(`Reschedule failed: ${e.message}`);
+    }
+  };
+
+  const handleCancel = async (): Promise<void> => {
+    if (!selected) return;
+    const reason = prompt(`Cancel booking ${refOf(selected)}? Enter a reason:`);
+    if (!reason || !reason.trim()) return;
+    try {
+      await ordersAPI.cancel(selected.id, { reason: reason.trim() });
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === selected.id
+            ? {
+                ...o,
+                status: 'cancelled',
+                cancellation_reason: reason.trim(),
+                cancelled_at: new Date().toISOString(),
+              }
+            : o,
+        ),
+      );
+    } catch (e: any) {
+      alert(`Cancel failed: ${e.message}`);
+    }
+  };
+
+  const statusCounts = useMemo<Record<string, number>>(() => {
+    const c: Record<string, number> = { all: orders.length };
+    for (const s of STATUS_ORDER) c[s.key] = 0;
+    for (const o of orders) {
+      const k = o.status as string | undefined;
+      if (k && c[k] !== undefined) c[k] += 1;
+    }
+    return c;
+  }, [orders]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap justify-between items-center gap-3">
+        <div>
+          <h2 className="text-3xl font-bold text-gray-900">Order Management</h2>
+          <p className="text-xs text-gray-500">
+            {b2bOnly
+              ? 'Industrial bookings only — your B2B/Industrial Admin scope'
+              : 'All live bookings across consumer and industrial services'}
+            {readOnly && ' · read-only for your role'}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value as 'all' | OrderStatus)}
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All ({statusCounts.all})</option>
+            {STATUS_ORDER.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label} ({statusCounts[s.key] || 0})
+              </option>
+            ))}
+          </select>
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Search ref / customer / service"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="absolute left-3 top-2.5 text-gray-400">🔍</span>
+          </div>
+          {canExport && orders.length > 0 && (
+            <button
+              onClick={exportBookings}
+              className="px-3 py-2 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700"
+              title="Download current list as CSV"
+            >
+              Export CSV
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded bg-red-50 border border-red-200 text-red-800 text-sm">
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-4">
+          {loading && orders.length === 0 ? (
+            <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-center text-gray-500">
+              Loading bookings…
+            </div>
+          ) : filteredOrders.length === 0 ? (
+            <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-center text-gray-500">
+              No orders match the current filter.
+            </div>
+          ) : (
+            filteredOrders.map((o) => {
+              const isSelected = selectedId === o.id;
+              return (
+                <div
+                  key={o.id}
+                  className={`bg-white rounded-lg shadow p-5 border transition lift fade-in-up
+                    ${isSelected ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200 hover:shadow-md'}`}
+                >
+                  <div className="flex flex-wrap justify-between items-start gap-2 mb-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">{refOf(o)}</h3>
+                      <p className="text-xs text-gray-500">
+                        {o.created_at ? new Date(o.created_at).toLocaleString() : ''}
+                        {o.booking_type ? ` · ${o.booking_type}` : ''}
+                      </p>
+                    </div>
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-medium ${
+                        statusTone[o.status as OrderStatus] || 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      {(o.status || '').replace('_', ' ')}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <p className="font-medium text-gray-900">Customer</p>
+                      <p className="text-gray-600">{o.customer?.name || '—'}</p>
+                      <p className="text-xs text-gray-500">
+                        {o.customer?.mobile || o.customer?.email || ''}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900">Service</p>
+                      <p className="text-gray-600">{o.service?.name || '—'}</p>
+                      <p className="font-medium text-gray-900">
+                        {money(Number(o.final_price) || Number(o.price_quoted) || 0)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {o.agent && (
+                    <div className="mt-3 text-sm">
+                      <p className="font-medium text-gray-900">Assigned Representative</p>
+                      <p className="text-gray-600">
+                        {o.agent.name} {o.agent.rating ? `(⭐ ${o.agent.rating})` : ''}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setSelectedId(o.id)}
+                      className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                      {readOnly ? 'View details' : 'Review & act'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div id="order-detail-panel" className="space-y-6 scroll-mt-20">
+          {!selected ? (
+            <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-sm text-gray-500">
+              {readOnly
+                ? 'Select an order to view its details. Your role is read-only for bookings.'
+                : 'Select an order to verify customer details, override representative assignment, and track its stage.'}
+            </div>
+          ) : (
+            <>
+              {/* Customer detail verification */}
+              <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900 mb-1">Customer Details</h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  {canVerify
+                    ? 'Step through each verification item. When complete, you can safely override or confirm assignment.'
+                    : 'Contact and service details for this booking.'}
+                </p>
+                <div className="space-y-3 text-sm mb-4">
+                  <div>
+                    <p className="font-medium text-gray-900">{selected.customer?.name || '—'}</p>
+                    <p className="text-gray-600">{selected.customer?.mobile}</p>
+                    <p className="text-gray-600">{selected.customer?.email}</p>
+                  </div>
+                  {selected.address && (
+                    <div>
+                      <p className="font-medium text-gray-900">Address</p>
+                      <p className="text-gray-600">{selected.address}</p>
+                    </div>
+                  )}
+                  {selected.notes && (
+                    <div>
+                      <p className="font-medium text-gray-900">Notes</p>
+                      <p className="text-gray-600">{selected.notes}</p>
+                    </div>
+                  )}
+                </div>
+                {canVerify && (
+                  <>
+                    <VerificationChecklist checks={checks} onToggle={toggleCheck} />
+                    <div className="mt-4 text-xs">
+                      {allVerified ? (
+                        <span className="inline-block px-2 py-1 bg-green-100 text-green-800 rounded-full">
+                          ✓ Verified — ready for assignment
+                        </span>
+                      ) : (
+                        <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full">
+                          Verification incomplete
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {canAssign && (
+                <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    Assign / Override Representative
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Pick a representative and add a short reason for the
+                    assignment. Reassignments are recorded in the order history.
+                  </p>
+                  {!allVerified && (
+                    <p className="text-xs text-yellow-800 bg-yellow-50 border border-yellow-200 rounded p-2 mb-3">
+                      Customer verification isn&apos;t complete yet. You can still assign, but
+                      ticking the checks first is recommended.
+                    </p>
+                  )}
+                  <input
+                    type="text"
+                    placeholder="Reason for this assignment (required)"
+                    value={assignmentReason}
+                    onChange={(e) => setAssignmentReason(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 mb-3"
+                  />
+                  <select
+                    disabled={!assignmentReason.trim() || agents.length === 0}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) handleAssign(v);
+                      e.target.value = '';
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="">
+                      {agents.length === 0
+                        ? 'No active representatives in the system'
+                        : 'Select representative to assign…'}
+                    </option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name || a.mobile || String(a.id).slice(0, 8)}
+                        {a.is_kyc_verified ? ' · ✅ KYC' : ' · ⚠ KYC pending'}
+                        {a.online_status ? ' · 🟢 online' : ' · ⚪ offline'}
+                        {Number(a.rating) > 0 ? ` · ⭐ ${Number(a.rating).toFixed(1)}` : ''}
+                        {a.total_jobs_completed !== undefined
+                          ? ` · ${a.total_jobs_completed} jobs`
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {!assignmentReason.trim() && agents.length > 0 && (
+                    <p className="text-[10px] text-gray-500 mt-2">
+                      ↑ Enter a reason first, then pick a representative from the dropdown.
+                    </p>
+                  )}
+                  {agents.length === 0 && (
+                    <p className="text-[10px] text-gray-500 mt-2">
+                      No active representatives yet. Representatives appear here once
+                      they sign up via the Representative app. KYC-verified reps are
+                      flagged with ✅; unverified ones with ⚠ — both can be assigned,
+                      but verified reps are recommended for production work.
+                    </p>
+                  )}
+                  {(assignmentLog[selected.id] || []).length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-xs font-medium text-gray-700 mb-2">Assignment history</p>
+                      <ul className="space-y-1">
+                        {(assignmentLog[selected.id] || []).map((entry, i) => (
+                          <li key={i} className="text-xs text-gray-600">
+                            · {new Date(entry.at).toLocaleTimeString()} —{' '}
+                            {entry.agentName || entry.agentId}: {entry.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(canReschedule || canCancel) &&
+                selected.status !== 'cancelled' &&
+                selected.status !== 'completed' && (
+                  <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-3">Booking actions</h3>
+                    <div className="flex gap-2">
+                      {canReschedule && (
+                        <button
+                          onClick={handleReschedule}
+                          className="flex-1 px-3 py-2 border border-blue-300 text-blue-700 text-sm rounded hover:bg-blue-50"
+                        >
+                          Reschedule
+                        </button>
+                      )}
+                      {canCancel && (
+                        <button
+                          onClick={handleCancel}
+                          className="flex-1 px-3 py-2 border border-red-300 text-red-600 text-sm rounded hover:bg-red-50"
+                        >
+                          Cancel booking
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-2">
+                      Current slot: {selected.preferred_date || '—'} {selected.preferred_time || ''}
+                    </p>
+                  </div>
+                )}
+
+              <DocumentsReview bookingId={selected.id} canVerify={can(userRole, CAP.DOCUMENT_VERIFY)} />
+
+              {/* Order stage tracking */}
+              <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Stage Tracking</h3>
+                <StagePipeline status={selected.status} />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

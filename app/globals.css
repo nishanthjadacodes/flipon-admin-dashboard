@@ -1,26 +1,240 @@
 @import "tailwindcss";
 
+/* FliponeX brand palette — Prussian blue is the primary surface colour,
+   logo accents (sun-yellow, flag-red, banner-blue, gold) used sparingly. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f9fc;
+  --foreground: #0f172a;
+
+  /* Primary (Prussian blue) — sidebar, primary buttons, section headings */
+  --brand-primary: #003153;         /* classic Prussian blue */
+  --brand-primary-contrast: #ffffff;
+  --brand-primary-hover: #00263f;
+  --brand-primary-50: #e8eff5;
+  --brand-primary-100: #c7d6e4;
+
+  /* Logo accents */
+  --brand-sun: #ffc300;              /* field yellow */
+  --brand-sun-soft: #fff4c6;          /* light-yellow tint for cards / hover */
+  --brand-gold: #c79321;              /* gold 'F' */
+  --brand-gold-soft: #f3e2ad;         /* light-gold tint */
+  --brand-flag: #d7263d;              /* ring red */
+  --brand-flag-soft: #fde0e4;         /* light-red tint */
+  --brand-banner: #0a4fa6;            /* ring blue */
+  --brand-banner-soft: #d7e4f6;       /* light-blue tint */
+  --brand-teal: #00818a;              /* supporting teal for growth metrics */
+  --brand-teal-soft: #cfe9ec;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand: var(--brand-primary);
+  --color-brand-hover: var(--brand-primary-hover);
+  --color-brand-contrast: var(--brand-primary-contrast);
+  --color-brand-sun: var(--brand-sun);
+  --color-brand-gold: var(--brand-gold);
+  --color-brand-flag: var(--brand-flag);
+  --color-brand-banner: var(--brand-banner);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+/* Keep light palette even when the OS prefers dark — an admin panel with
+   abrupt colour-scheme flips creates a poor control-screen experience.
+   Only the foreground/background are locked; brand tokens above carry over. */
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Brand utility classes — lets components opt into the palette without
+   editing every Tailwind class in place. `!important` ensures these win
+   against Tailwind v4 utilities that share the same specificity. */
+.bg-brand { background-color: var(--brand-primary) !important; color: var(--brand-primary-contrast) !important; }
+.bg-brand:hover { background-color: var(--brand-primary-hover) !important; }
+.bg-brand-soft { background-color: var(--brand-primary-50) !important; }
+.bg-brand-banner { background-color: var(--brand-banner) !important; color: #fff !important; }
+.text-brand { color: var(--brand-primary) !important; }
+.text-brand-banner { color: var(--brand-banner) !important; }
+.border-brand { border-color: var(--brand-primary) !important; }
+.ring-brand { --tw-ring-color: var(--brand-primary); }
+.accent-sun { color: var(--brand-sun); }
+.accent-gold { color: var(--brand-gold); }
+.accent-flag { color: var(--brand-flag); }
+.accent-banner { color: var(--brand-banner); }
+
+/* A short decorative top bar — used on dashboard heroes and section headers. */
+.brand-rule {
+  background: linear-gradient(
+    90deg,
+    var(--brand-primary) 0%,
+    var(--brand-banner) 35%,
+    var(--brand-sun) 55%,
+    var(--brand-flag) 85%,
+    var(--brand-primary) 100%
+  );
+  height: 3px;
+  border-radius: 9999px;
+}
+
+/* Custom scrollbar styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Responsive design improvements */
+@media (max-width: 768px) {
+  .sidebar-mobile {
+    transform: translateX(-100%);
+    transition: transform 0.3s ease-in-out;
+  }
+  
+  .sidebar-mobile.open {
+    transform: translateX(0);
+  }
+  
+  .main-content-mobile {
+    margin-left: 0;
+  }
+}
+
+/* Animation utilities */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+@keyframes softPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 49, 83, 0.35); }
+  50%      { box-shadow: 0 0 0 8px rgba(0, 49, 83, 0);     }
+}
+@keyframes glowYellow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 195, 0, 0.45); }
+  50%      { box-shadow: 0 0 14px 4px rgba(255, 195, 0, 0.25); }
+}
+@keyframes floatY {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+
+.fade-in       { animation: fadeIn 0.3s ease-out; }
+.fade-in-up    { animation: fadeInUp 0.45s cubic-bezier(.2,.8,.2,1) both; }
+.fade-in-scale { animation: fadeInScale 0.3s cubic-bezier(.2,.8,.2,1) both; }
+.slide-in-left { animation: slideInLeft 0.35s cubic-bezier(.2,.8,.2,1) both; }
+.pulse-brand   { animation: softPulse 2.2s ease-out infinite; }
+.glow-yellow   { animation: glowYellow 2.4s ease-in-out infinite; }
+.float-y       { animation: floatY 3s ease-in-out infinite; }
+
+/* Staggered entrance — apply .stagger to a parent, child gets its own delay via --i */
+.stagger > * { animation: fadeInUp 0.5s cubic-bezier(.2,.8,.2,1) both; }
+.stagger > *:nth-child(1)  { animation-delay: 40ms; }
+.stagger > *:nth-child(2)  { animation-delay: 90ms; }
+.stagger > *:nth-child(3)  { animation-delay: 140ms; }
+.stagger > *:nth-child(4)  { animation-delay: 190ms; }
+.stagger > *:nth-child(5)  { animation-delay: 240ms; }
+.stagger > *:nth-child(6)  { animation-delay: 290ms; }
+.stagger > *:nth-child(7)  { animation-delay: 340ms; }
+
+/* Card microinteraction — lift on hover, subtle brand-tinted ring */
+.lift {
+  transition: transform 180ms cubic-bezier(.2,.8,.2,1),
+              box-shadow 180ms cubic-bezier(.2,.8,.2,1),
+              border-color 180ms ease;
+}
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -10px rgba(0, 49, 83, 0.25);
+  border-color: rgba(0, 49, 83, 0.25);
+}
+
+/* Loading shimmer block */
+.skeleton {
+  background: linear-gradient(90deg,
+    rgba(0, 49, 83, 0.05) 0%,
+    rgba(0, 49, 83, 0.12) 50%,
+    rgba(0, 49, 83, 0.05) 100%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+/* Respect reduced-motion users */
+@media (prefers-reduced-motion: reduce) {
+  .fade-in, .fade-in-up, .fade-in-scale, .slide-in-left,
+  .pulse-brand, .glow-yellow, .float-y, .stagger > * {
+    animation: none !important;
+  }
+  .lift:hover { transform: none; }
+}
+
+/* Reusable "tile" — used in the dashboard, reports, etc. */
+.tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 1.1rem 1.25rem;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.tile::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: var(--brand-primary);
+}
+.tile.accent-y::before  { background: var(--brand-sun); }
+.tile.accent-r::before  { background: var(--brand-flag); }
+.tile.accent-g::before  { background: var(--brand-gold); }
+.tile.accent-b::before  { background: var(--brand-banner); }
+.tile.accent-t::before  { background: var(--brand-teal); }
+
+/* Focus styles for better accessibility */
+.focus-ring:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Print styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  .print-break {
+    page-break-after: always;
+  }
 }

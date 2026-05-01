@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" aria-label="FliponeX logo">
+  <!-- Inspired by the FliponeX badge: Prussian-blue outer ring, yellow field,
+       red & blue sweeping arcs, gold "F" centre. When the real PNG is dropped
+       in, replace this file (or reference /fliponex-logo.png instead). -->
+  <defs>
+    <radialGradient id="field" cx="50%" cy="48%" r="55%">
+      <stop offset="0%" stop-color="#FFE24D" />
+      <stop offset="100%" stop-color="#FFC300" />
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E8B94B" />
+      <stop offset="100%" stop-color="#8A6A1F" />
+    </linearGradient>
+  </defs>
+  <circle cx="100" cy="100" r="98" fill="#003153" />
+  <circle cx="100" cy="100" r="92" fill="#FFFFFF" />
+  <circle cx="100" cy="100" r="88" fill="#003153" />
+  <circle cx="100" cy="100" r="82" fill="url(#field)" />
+  <path d="M100 20 A80 80 0 0 1 180 100 L158 100 A58 58 0 0 0 100 42 Z" fill="#0A4FA6" opacity="0.85"/>
+  <path d="M100 180 A80 80 0 0 1 20 100 L42 100 A58 58 0 0 0 100 158 Z" fill="#D7263D" opacity="0.85"/>
+  <g transform="translate(100 100)">
+    <path transform="translate(-42 -50)" fill="url(#gold)" stroke="#5A3C0E" stroke-width="2"
+      d="M10 0 L78 0 L78 20 L34 20 L34 42 L68 42 L68 60 L34 60 L34 100 L10 100 Z" />
+  </g>
+</svg>
