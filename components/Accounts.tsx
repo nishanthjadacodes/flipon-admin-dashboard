@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import { payoutsAPI, royaltyAPI, reportsAPI, agentsAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { downloadCsv } from '@/utils/csv';
+import { useModalBackClose } from '@/utils/useModalBackClose';
 
 // Finance & Accounts Admin home — revenue + royalty + wallet/payouts.
 
@@ -165,6 +166,8 @@ interface CreatePayoutModalProps {
 }
 
 function CreatePayoutModal({ agents, onClose, onCreated, busy }: CreatePayoutModalProps) {
+  // Browser back closes the modal instead of leaving the page.
+  useModalBackClose(true, onClose);
   const [agentId, setAgentId] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
   const [method, setMethod] = useState<string>('bank_transfer');
@@ -191,7 +194,7 @@ function CreatePayoutModal({ agents, onClose, onCreated, busy }: CreatePayoutMod
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <form
         onSubmit={submit}
         className="bg-white rounded-lg p-6 max-w-lg w-full space-y-3 max-h-[90vh] overflow-y-auto"

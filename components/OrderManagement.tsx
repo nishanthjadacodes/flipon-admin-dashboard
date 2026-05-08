@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ordersAPI, agentsAPI, documentsAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { downloadCsv } from '@/utils/csv';
+import { useModalBackClose } from '@/utils/useModalBackClose';
 
 // Backend status values come from the Booking model.
 type OrderStatus =
@@ -69,6 +71,10 @@ interface OrderRecord {
   final_price?: number;
   price_quoted?: number;
   payment_status?: string;
+  payment_method?: string;
+  transaction_id?: string;
+  amount_paid?: number;
+  paid_at?: string;
   preferred_date?: string;
   preferred_time?: string;
   address?: string;
@@ -132,6 +138,35 @@ function DocThumbnail({
 // failing URL + Open-in-new-tab fallback) instead of a black void when the
 // image 404s — which is what was happening when Render's ephemeral disk
 // wiped older uploads.
+// Normalise the doc's URL so the preview always loads against the API
+// origin. Relative paths (`/uploads/...`) and localhost URLs would fail
+// when the admin dashboard runs on a different origin (the production
+// Vercel deploy can't reach `localhost:3001`). Cloudinary / absolute
+// http(s) URLs pass through unchanged.
+const fixDocUrlAdmin = (raw?: string): string => {
+  if (!raw) return '';
+  const url = String(raw).trim();
+  // Already absolute — but rewrite localhost so the admin dashboard
+  // hosted on Vercel can still load assets from the deployed backend.
+  if (/^https?:\/\//i.test(url)) {
+    if (/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(url)) {
+      const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '');
+      const path = url.replace(/^https?:\/\/[^/]+/, '');
+      return apiBase ? `${apiBase}${path}` : url;
+    }
+    return url;
+  }
+  // Relative path — prefix with the API origin.
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '');
+  if (!apiBase) return url;
+  return url.startsWith('/') ? `${apiBase}${url}` : `${apiBase}/${url}`;
+};
+
+const isPdfDoc = (doc: DocumentRecord, url: string): boolean => {
+  if (doc.mime_type === 'application/pdf') return true;
+  return /\.pdf(\?|$)/i.test(url);
+};
+
 function DocPreviewOverlay({
   doc,
   onClose,
@@ -140,7 +175,9 @@ function DocPreviewOverlay({
   onClose: () => void;
 }) {
   const [state, setState] = useState<'loading' | 'loaded' | 'error'>('loading');
-  const url = doc.file_url || '';
+  const url = fixDocUrlAdmin(doc.file_url);
+  const renderAsPdf = isPdfDoc(doc, url);
+  const renderAsImage = !!url && !renderAsPdf;
 
   // Reset state whenever the previewed doc changes (admin clicks a different
   // thumbnail without closing the modal first).
@@ -148,13 +185,42 @@ function DocPreviewOverlay({
     setState('loading');
   }, [url]);
 
-  return (
+  // SSR safety — only access document on the client.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Lock body scroll while the modal is open so the page underneath
+  // doesn't scroll when the user wheel-scrolls inside an open modal.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  if (!mounted) return null;
+
+  // ─── Portal-rendered overlay ─────────────────────────────────────────
+  // Renders directly under <body> so the `fixed inset-0` positioning is
+  // relative to the viewport, NOT to whatever ancestor in the parent
+  // React tree happens to have a `transform` / `filter` / `perspective`
+  // CSS property (those create new containing blocks for fixed-position
+  // descendants — the symptom: the modal anchored at the top of the
+  // ScrollView's container and the user had to scroll up to see it).
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[9999] bg-black/60 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-5xl max-h-full bg-white rounded-lg overflow-hidden flex flex-col"
+        // Compact centred modal — was max-w-5xl (huge) before. Now tops
+        // out at ~440px wide with a comfortably constrained image area
+        // so the preview reads as "popover next to the document I just
+        // clicked" rather than a full-page overlay.
+        className="relative w-full max-w-md max-h-[88vh] bg-white rounded-xl overflow-hidden flex flex-col shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 flex-shrink-0">
@@ -180,20 +246,36 @@ function DocPreviewOverlay({
             </button>
           </div>
         </div>
-        <div className="relative bg-gray-50 flex items-center justify-center min-h-[300px] max-h-[80vh]">
-          {/* Hidden image — we render it always so onLoad/onError fire, but
-              hide it visually until it succeeds. Prevents the broken-image
-              icon flash. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={url}
-            alt="Document preview"
-            onLoad={() => setState('loaded')}
-            onError={() => setState('error')}
-            className={`max-w-full max-h-[80vh] object-contain ${
-              state === 'loaded' ? '' : 'invisible absolute'
-            }`}
-          />
+        <div className="relative bg-gray-50 flex items-center justify-center min-h-[260px] max-h-[70vh]">
+          {/* PDF path — iframe with the same compact dimensions as the
+              image path so the modal stays a popover, not a full-screen
+              viewer (admin can still tap "Open in new tab" if they want
+              the full PDF reader). */}
+          {renderAsPdf && url && (
+            <iframe
+              src={url}
+              title={doc.file_name || 'PDF preview'}
+              onLoad={() => setState('loaded')}
+              onError={() => setState('error')}
+              className="w-full h-[60vh] bg-white"
+            />
+          )}
+
+          {/* Image path — capped to the modal's height so the picture
+              never blows out the viewport. */}
+          {renderAsImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={url}
+              alt="Document preview"
+              onLoad={() => setState('loaded')}
+              onError={() => setState('error')}
+              className={`max-w-full max-h-[60vh] object-contain ${
+                state === 'loaded' ? '' : 'invisible absolute'
+              }`}
+            />
+          )}
+
           {state === 'loading' && (
             <div className="flex flex-col items-center text-gray-600">
               <svg className="animate-spin h-8 w-8 text-blue-500" viewBox="0 0 24 24">
@@ -206,31 +288,37 @@ function DocPreviewOverlay({
                   strokeLinecap="round"
                 />
               </svg>
-              <p className="text-sm mt-3">Loading image…</p>
+              <p className="text-sm mt-3">{renderAsPdf ? 'Loading PDF…' : 'Loading image…'}</p>
             </div>
           )}
+
           {state === 'error' && (
             <div className="flex flex-col items-center text-center px-6 py-10 text-gray-700">
               <span className="text-4xl">⚠️</span>
-              <p className="mt-3 font-semibold text-gray-900">Could not load image</p>
+              <p className="mt-3 font-semibold text-gray-900">
+                Could not load {renderAsPdf ? 'PDF' : 'image'}
+              </p>
               <p className="mt-1 text-sm text-gray-600 max-w-md">
                 The file may have been removed from storage. New uploads will persist
                 once Cloudinary is configured on the backend.
               </p>
-              <p className="mt-3 text-[11px] text-gray-400 break-all max-w-md">{url}</p>
-              <a
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-              >
-                Open in new tab
-              </a>
+              <p className="mt-3 text-[11px] text-gray-400 break-all max-w-md">{url || '(empty URL)'}</p>
+              {url && (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-4 px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                >
+                  Open in new tab
+                </a>
+              )}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -265,6 +353,21 @@ function DocumentsReview({ bookingId, canVerify }: { bookingId: string; canVerif
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [previewDoc, setPreviewDoc] = useState<DocumentRecord | null>(null);
+  // Rejection-reason modal — replaces the browser-style window.prompt()
+  // which renders that ugly "The page at admindashboard.vercel.app
+  // says…" header that doesn't match the rest of the dashboard's UI.
+  const [rejectingDoc, setRejectingDoc] = useState<DocumentRecord | null>(null);
+  const [rejectReason, setRejectReason] = useState<string>('');
+  const [rejectSubmitting, setRejectSubmitting] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Browser back closes the modal instead of leaving the page. Pushes
+  // a synthetic history entry while open; intercepts popstate.
+  useModalBackClose(previewDoc !== null, () => setPreviewDoc(null));
+  useModalBackClose(rejectingDoc !== null, () => {
+    setRejectingDoc(null);
+    setRejectReason('');
+  });
 
   const load = async (): Promise<void> => {
     setLoading(true);
@@ -284,13 +387,26 @@ function DocumentsReview({ bookingId, canVerify }: { bookingId: string; canVerif
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookingId]);
 
-  const act = async (doc: DocumentRecord, status: 'approved' | 'rejected'): Promise<void> => {
-    let notes = '';
-    if (status === 'rejected') {
-      notes = prompt('Reason for rejection:') || '';
-      if (!notes.trim()) return;
+  // Approve goes straight through. Reject opens the in-app modal so the
+  // admin types the reason in a styled textarea — replaces the browser
+  // window.prompt() which had the ugly "The page at … says" chrome.
+  const act = (doc: DocumentRecord, status: 'approved' | 'rejected'): void => {
+    if (status === 'approved') {
+      void runVerify(doc, 'approved', '');
+      return;
     }
+    setRejectingDoc(doc);
+    setRejectReason('');
+    setActionError(null);
+  };
+
+  const runVerify = async (
+    doc: DocumentRecord,
+    status: 'approved' | 'rejected',
+    notes: string,
+  ): Promise<void> => {
     setBusyId(doc.id);
+    setActionError(null);
     try {
       const updated = await documentsAPI.verify(doc.id, { status, notes });
       setDocs((prev) =>
@@ -305,11 +421,34 @@ function DocumentsReview({ bookingId, canVerify }: { bookingId: string; canVerif
             : d,
         ),
       );
+      // Reject succeeded → close the modal.
+      if (status === 'rejected') setRejectingDoc(null);
     } catch (e: any) {
-      alert(`Document update failed: ${e.message}`);
+      // Show inside the modal if open, otherwise fall back to a styled
+      // toast-equivalent (the browser alert was the original ugly thing
+      // we're getting rid of, so we use an inline error pill instead).
+      const msg = e?.message || 'Could not update document.';
+      setActionError(msg);
+      if (status !== 'rejected') {
+        // For approve failures (no modal open), surface inline so the
+        // admin sees what's wrong — no native alert popup.
+        alert(msg);
+      }
     } finally {
       setBusyId(null);
+      setRejectSubmitting(false);
     }
+  };
+
+  const submitReject = async (): Promise<void> => {
+    if (!rejectingDoc) return;
+    const trimmed = rejectReason.trim();
+    if (!trimmed) {
+      setActionError('Please enter a reason for rejection.');
+      return;
+    }
+    setRejectSubmitting(true);
+    await runVerify(rejectingDoc, 'rejected', trimmed);
   };
 
   return (
@@ -418,6 +557,79 @@ function DocumentsReview({ bookingId, canVerify }: { bookingId: string; canVerif
           doc={previewDoc}
           onClose={() => setPreviewDoc(null)}
         />
+      )}
+
+      {/* ─── Reject reason modal ─────────────────────────────────────────
+          Replaces the browser window.prompt() with a styled in-app modal
+          matching the rest of the dashboard — no more "The page at … says"
+          header. Auto-focuses the textarea, supports Esc to cancel and
+          Cmd/Ctrl+Enter to submit. */}
+      {rejectingDoc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => !rejectSubmitting && setRejectingDoc(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-3 border-b border-gray-100">
+              <h3 className="text-lg font-semibold text-gray-900">Reject document</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                {(rejectingDoc.document_type || 'document').replace(/_/g, ' ')}
+                {' · '}
+                <span className="text-gray-400">{rejectingDoc.file_name}</span>
+              </p>
+            </div>
+            <div className="px-5 py-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Reason for rejection <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                autoFocus
+                rows={4}
+                value={rejectReason}
+                onChange={(e) => {
+                  setRejectReason(e.target.value);
+                  if (actionError) setActionError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && !rejectSubmitting) setRejectingDoc(null);
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void submitReject();
+                }}
+                placeholder="e.g. Image is blurry, please re-upload a clearer photo"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
+                disabled={rejectSubmitting}
+              />
+              {actionError && (
+                <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                  {actionError}
+                </p>
+              )}
+              <p className="text-xs text-gray-500 mt-2">
+                The customer will see this note next to the document and can re-upload.
+              </p>
+            </div>
+            <div className="px-5 py-3 bg-gray-50 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRejectingDoc(null)}
+                disabled={rejectSubmitting}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitReject()}
+                disabled={rejectSubmitting || !rejectReason.trim()}
+                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {rejectSubmitting ? 'Rejecting…' : 'Reject document'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -869,6 +1081,82 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
                       )}
                     </div>
                   </>
+                )}
+              </div>
+
+              {/* Payment trail — shows the Razorpay/online-payment breakdown
+                  whenever it exists. For paid bookings, surfaces method +
+                  transaction id + amount + paid timestamp so finance has
+                  everything they need to reconcile. For unpaid bookings,
+                  shows just the pending status. */}
+              <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900 mb-1">Payment</h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Razorpay / online-payment trail for this booking.
+                </p>
+                {selected.payment_status === 'paid' ? (
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500">Status</span>
+                      <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-xs font-semibold">
+                        ✓ Paid
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500">Amount</span>
+                      <span className="font-semibold text-gray-900">
+                        ₹{selected.amount_paid ?? selected.final_price ?? selected.price_quoted ?? 0}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500">Method</span>
+                      <span className="font-semibold text-gray-900 uppercase">
+                        {selected.payment_method || 'online'}
+                      </span>
+                    </div>
+                    {selected.transaction_id && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-gray-500 shrink-0">Transaction ID</span>
+                        <button
+                          type="button"
+                          className="font-mono text-xs text-blue-600 hover:underline truncate"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(String(selected.transaction_id));
+                          }}
+                          title="Click to copy"
+                        >
+                          {selected.transaction_id}
+                        </button>
+                      </div>
+                    )}
+                    {selected.paid_at && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-gray-500">Paid at</span>
+                        <span className="text-gray-700 text-xs">
+                          {new Date(selected.paid_at).toLocaleString('en-IN', {
+                            day: '2-digit', month: 'short', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : selected.payment_status === 'refunded' ? (
+                  <div className="text-sm">
+                    <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-xs font-semibold">
+                      Refunded
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-sm">
+                    <span className="px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 text-xs font-semibold">
+                      Payment pending
+                    </span>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Booking is created but payment hasn&apos;t been collected yet.
+                      Customer pays after the rep marks the work complete.
+                    </p>
+                  </div>
                 )}
               </div>
 

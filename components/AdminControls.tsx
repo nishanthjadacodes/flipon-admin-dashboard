@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { adminAPI, dashboardAPI, ordersAPI } from '@/utils/api';
+import { useModalBackClose } from '@/utils/useModalBackClose';
 
 // RBAC roles copied from the client's PDF spec.
 
@@ -136,6 +137,8 @@ interface AdminUserModalProps {
 }
 
 function AdminUserModal({ initial, onClose, onSave, busy, title }: AdminUserModalProps) {
+  // Browser back closes the modal instead of leaving the admin section.
+  useModalBackClose(true, onClose);
   const [form, setForm] = useState<AdminUserFormState>({
     name: initial?.name || '',
     email: initial?.email || '',

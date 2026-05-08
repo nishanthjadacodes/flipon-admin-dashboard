@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { b2bAPI, vaultAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
+import { useModalBackClose } from '@/utils/useModalBackClose';
 
 // Corporate document vault — B2B/Industrial Admin scope per PDF.
 // Documents are encrypted at rest server-side; download link is auth-checked.
@@ -65,6 +66,8 @@ interface UploadModalProps {
 }
 
 function UploadModal({ enquiryId, onClose, onUploaded }: UploadModalProps) {
+  // Browser back closes the modal instead of leaving the vault page.
+  useModalBackClose(true, onClose);
   const [file, setFile] = useState<File | null>(null);
   const [tier, setTier] = useState<VaultTier>('standard');
   const [note, setNote] = useState<string>('');
@@ -98,7 +101,7 @@ function UploadModal({ enquiryId, onClose, onUploaded }: UploadModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <form
         onSubmit={submit}
         className="bg-white rounded-lg p-6 max-w-lg w-full space-y-3 max-h-[90vh] overflow-y-auto"

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { servicesAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
+import { useModalBackClose } from '@/utils/useModalBackClose';
 
 // Shape: see flipon-backend Service model. user_cost is for fixed-price
 // consumer services; indicative_price_from/to describe quote-based industrial
@@ -240,6 +241,8 @@ interface NewFormState {
 }
 
 function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
+  // Browser back closes the modal instead of leaving the services page.
+  useModalBackClose(true, onClose);
   const [form, setForm] = useState<NewFormState>({
     name: '',
     category: '',
@@ -293,7 +296,7 @@ function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <form
         onSubmit={submit}
         className="bg-white rounded-lg p-6 max-w-lg w-full space-y-3 max-h-[90vh] overflow-y-auto"
