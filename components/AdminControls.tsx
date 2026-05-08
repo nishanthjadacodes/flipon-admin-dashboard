@@ -176,7 +176,7 @@ function AdminUserModal({ initial, onClose, onSave, busy, title }: AdminUserModa
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <form
         onSubmit={submit}
         className="bg-white rounded-lg p-6 max-w-lg w-full space-y-3 max-h-[90vh] overflow-y-auto"
@@ -773,6 +773,86 @@ interface AuditLogRecord {
   metadata?: string | Record<string, unknown>;
 }
 
+// ─── Global Exports panel ────────────────────────────────────────────────
+// Three buttons → three server-side CSV downloads:
+//   • Financial   — every completed/submitted booking with gross,
+//                   commission, payment status, dates
+//   • Users       — full user roster (customers + agents + admins)
+//   • Agents      — field-rep roster with KYC + earnings + rating
+// Each download is audit-logged on the backend so a Super Admin can
+// later see who exported what.
+function GlobalExportsPanel() {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (id: string, fn: () => Promise<void>): Promise<void> => {
+    setBusy(id);
+    setError(null);
+    try {
+      await fn();
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  type ExportSpec = { id: string; label: string; desc: string; fn: () => Promise<void> };
+  const exports: ExportSpec[] = [
+    {
+      id: 'financial',
+      label: 'Financial data',
+      desc: 'All completed bookings · gross · agent commission · payment status · dates',
+      fn: () => adminAPI.exportFinancial(),
+    },
+    {
+      id: 'users',
+      label: 'All users',
+      desc: 'Customers, agents, admins · contact details · status · created date',
+      fn: () => adminAPI.exportUsers(),
+    },
+    {
+      id: 'agents',
+      label: 'All agents',
+      desc: 'Field rep roster · KYC status · rating · jobs · wallet balance',
+      fn: () => adminAPI.exportAgents(),
+    },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded">
+          {error}
+        </div>
+      )}
+      <div className="grid sm:grid-cols-3 gap-3">
+        {exports.map((x) => (
+          <div
+            key={x.id}
+            className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col"
+          >
+            <div className="font-semibold text-gray-900">{x.label}</div>
+            <div className="text-xs text-gray-500 mt-1 mb-4 flex-1">{x.desc}</div>
+            <button
+              onClick={() => run(x.id, x.fn)}
+              disabled={busy !== null}
+              className="px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {busy === x.id ? 'Preparing CSV…' : 'Download CSV'}
+            </button>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-gray-400">
+        Exports are capped at 50,000 rows per file and ordered newest-first. Every download is
+        written to the audit log (action: <code>export.financial</code> /{' '}
+        <code>export.users</code> / <code>export.agents</code>).
+      </p>
+    </div>
+  );
+}
+
 function AuditLogsPanel() {
   const [logs, setLogs] = useState<AuditLogRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -841,7 +921,7 @@ function AuditLogsPanel() {
 
 /* ─── Main container ───────────────────────────────────────────────────── */
 
-type AdminTab = 'users' | 'financial' | 'brand' | 'notifications' | 'audit';
+type AdminTab = 'users' | 'financial' | 'brand' | 'notifications' | 'exports' | 'audit';
 
 interface AdminTabSpec {
   id: AdminTab;
@@ -952,6 +1032,7 @@ export default function AdminControls({ userRole }: AdminControlsProps) {
     { id: 'financial', label: 'Financial Config', onlySuper: true },
     { id: 'brand', label: 'Brand & Content', onlySuper: true },
     { id: 'notifications', label: 'Notifications' },
+    { id: 'exports', label: 'Global Exports', onlySuper: true },
     { id: 'audit', label: 'Audit Logs', onlySuper: true },
   ];
 
@@ -1130,6 +1211,16 @@ export default function AdminControls({ userRole }: AdminControlsProps) {
             New bookings, stalled documentation and ops backlog pulled live from the backend.
           </p>
           <NotificationsPanel />
+        </div>
+      )}
+
+      {tab === 'exports' && isSuper && (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500">
+            Server-side CSV exports of the full database. Every download is recorded in the
+            audit log (Super Admin only).
+          </p>
+          <GlobalExportsPanel />
         </div>
       )}
 

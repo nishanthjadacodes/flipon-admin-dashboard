@@ -218,6 +218,29 @@ export const agentsAPI = {
   getKycPending: (): Promise<unknown> => apiRequest('/kyc/admin/kyc/pending'),
   getKycDetails: (agentId: string): Promise<unknown> =>
     apiRequest(`/kyc/admin/kyc/${agentId}`),
+
+  // ─── Governance — Refer & Earn / Royalty policy section 4 ────────────
+  // forfeitRoyalty: anti-poaching violation → forfeit royalty earnings
+  //   for the rest of the current calendar quarter.
+  // clearRoyaltyForfeit: reverse a previous forfeit (dispute resolved).
+  // terminateForSelfReferral: confirmed self-referral via duplicate
+  //   accounts → hard-deactivate + expire all pending referrals on
+  //   either side. Permanent.
+  forfeitRoyalty: (agentId: string, reason: string): Promise<unknown> =>
+    apiRequest(`/admin/users/${agentId}/forfeit-royalty`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  clearRoyaltyForfeit: (agentId: string): Promise<unknown> =>
+    apiRequest(`/admin/users/${agentId}/clear-royalty-forfeit`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  terminateForSelfReferral: (agentId: string, reason: string): Promise<unknown> =>
+    apiRequest(`/admin/users/${agentId}/terminate-self-referral`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 };
 
 // ─── Services ─────────────────────────────────────────────────────────────
@@ -370,6 +393,11 @@ export const b2bAPI = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     }),
+  convertToBooking: (enquiryId: string): Promise<unknown> =>
+    apiRequest(`/admin/enquiries/${enquiryId}/convert-to-booking`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 };
 
 // Helper — mirror apiRequest but keep the full response (we want the sibling
@@ -429,6 +457,43 @@ export const adminAPI = {
   getConfig: (): Promise<unknown> => apiRequest('/admin/config'),
   updateConfig: (patch: Record<string, unknown>): Promise<unknown> =>
     apiRequest('/admin/config', { method: 'PUT', body: JSON.stringify(patch) }),
+
+  // Global Exports — server-side CSV downloads. Each call hits the
+  // backend, which streams a CSV via Content-Disposition and writes
+  // an audit log row. Browser saves the file to Downloads.
+  exportFinancial: (): Promise<void> =>
+    downloadFile('/admin/exports/financial', 'flipone-financial-export'),
+  exportUsers: (): Promise<void> =>
+    downloadFile('/admin/exports/users', 'flipone-users-export'),
+  exportAgents: (): Promise<void> =>
+    downloadFile('/admin/exports/agents', 'flipone-agents-export'),
+};
+
+// Download helper — fetches an endpoint as a Blob and triggers the
+// browser's Save-As. Used by Global Exports. Errors propagate so the
+// caller can show a toast on failure.
+const downloadFile = async (endpoint: string, baseName: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, { method: 'GET' });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Export failed (HTTP ${response.status})`);
+  }
+  const blob = await response.blob();
+  // Try to honour the server-supplied filename in Content-Disposition,
+  // else fall back to a stamped local one.
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const filename = match?.[1] || `${baseName}-${stamp}.csv`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 };
 
 export const healthAPI = {
