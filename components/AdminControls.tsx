@@ -97,6 +97,29 @@ const fmtDate = (iso?: string | null): string => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 };
+
+// Human-friendly relative-time label for the Admin Controls
+// "Last Active" column. Buckets aligned to what makes sense for
+// admin activity (sub-second freshness isn't useful):
+//   <60s   → "just now"
+//   <60m   → "X min ago"
+//   <24h   → "Xh ago"
+//   <30d   → "Xd ago"
+//   else   → "Xmo ago"
+const relTimeAgo = (ms: number): string => {
+  if (ms < 0) return 'just now'; // future-dated row, treat as fresh
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const mo = Math.floor(day / 30);
+  return `${mo}mo ago`;
+};
+
 const shortId = (id: unknown): string =>
   typeof id === 'string' ? id.slice(0, 8) : String(id ?? '');
 
@@ -108,6 +131,10 @@ interface AdminUser {
   role: AdminRole | string;
   is_active?: boolean;
   created_at?: string;
+  // Stamped on every successful admin login by the backend. Drives
+  // the "active Xh ago" pill so a Super Admin can spot stale or
+  // never-logged-in accounts at a glance.
+  last_login_at?: string | null;
 }
 
 interface AdminUserPayload {
@@ -1124,7 +1151,8 @@ export default function AdminControls({ userRole }: AdminControlsProps) {
                         <th className="text-left py-2 px-3">Name</th>
                         <th className="text-left py-2 px-3">Email</th>
                         <th className="text-left py-2 px-3">Mobile</th>
-                        <th className="text-left py-2 px-3">Status</th>
+                        <th className="text-left py-2 px-3">Approved</th>
+                        <th className="text-left py-2 px-3">Last Active</th>
                         <th className="text-left py-2 px-3">Created</th>
                         {isSuper && <th className="text-right py-2 px-3">Actions</th>}
                       </tr>
@@ -1141,8 +1169,44 @@ export default function AdminControls({ userRole }: AdminControlsProps) {
                                 a.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-700'
                               }`}
                             >
-                              {a.is_active ? 'active' : 'inactive'}
+                              {a.is_active ? 'approved' : 'deactivated'}
                             </span>
+                          </td>
+                          <td className="py-2 px-3 text-xs">
+                            {(() => {
+                              // Render last-active state with three buckets:
+                              //   Never logged in → gray pill
+                              //   Within 5 minutes → green "active now"
+                              //   Older → relative time + absolute date below
+                              const ts = a.last_login_at;
+                              if (!ts) {
+                                return (
+                                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                                    never logged in
+                                  </span>
+                                );
+                              }
+                              const date = new Date(ts);
+                              const ms = Date.now() - date.getTime();
+                              const ACTIVE_NOW_WINDOW = 5 * 60 * 1000;
+                              const isActiveNow = ms < ACTIVE_NOW_WINDOW;
+                              return (
+                                <div className="flex flex-col gap-0.5">
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-full font-medium w-fit ${
+                                      isActiveNow
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-blue-50 text-blue-800'
+                                    }`}
+                                  >
+                                    {isActiveNow ? '● active now' : relTimeAgo(ms)}
+                                  </span>
+                                  <span className="text-[10px] text-gray-500">
+                                    {date.toLocaleString()}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="py-2 px-3 text-gray-600 text-xs">{fmtDate(a.created_at)}</td>
                           {isSuper && (

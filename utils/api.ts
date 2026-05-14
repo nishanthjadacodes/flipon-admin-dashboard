@@ -194,8 +194,20 @@ export interface AgentKycOptions {
 }
 
 export const agentsAPI = {
+  // 30-second cache-bust window — without it, the api helper's 60s
+  // GET cache returns stale data and online_status changes from the
+  // agent app take up to a full minute to surface in the admin's
+  // representative-management list. Adding a `_t` param that ticks
+  // every 30s makes the URL unique per refresh window so the silent-
+  // refresh interval actually round-trips to the server.
   getAll: (params: Record<string, unknown> = {}): Promise<unknown> =>
-    apiRequest(`/admin/users${qs({ role: 'agent', ...params })}`),
+    apiRequest(
+      `/admin/users${qs({
+        role: 'agent',
+        _t: Math.floor(Date.now() / 30_000),
+        ...params,
+      })}`,
+    ),
   getAvailable: (): Promise<unknown> => apiRequest('/admin/agents/available'),
   getPerformance: (limit?: number): Promise<unknown> =>
     apiRequest(`/admin/reports/agents${qs({ limit })}`),
@@ -437,6 +449,20 @@ export const vaultAPI = {
     return `${base}/vault/${id}/download`;
   },
   delete: (id: string): Promise<unknown> => apiRequest(`/vault/${id}`, { method: 'DELETE' }),
+};
+
+// ─── In-app inbox (top-down notification banner) ─────────────────────────
+export const inboxAPI = {
+  // GET unread notifications for the current admin. Drives the top-down
+  // banner that pops on dashboard load.
+  unread: (): Promise<{ notifications: any[]; unread_count: number }> =>
+    apiRequest('/notifications/inbox?unread_only=true&limit=10'),
+  // Mark a single notification seen — called when the user taps or
+  // dismisses the banner.
+  markRead: (id: string | number): Promise<unknown> =>
+    apiRequest(`/notifications/${id}/read`, { method: 'POST' }),
+  markAllRead: (): Promise<unknown> =>
+    apiRequest('/notifications/read-all', { method: 'POST' }),
 };
 
 // ─── Admin management ────────────────────────────────────────────────────

@@ -70,6 +70,15 @@ interface PipelineRecord {
   created_at?: string;
   urgency?: string;
   submission_details?: SubmissionDetails;
+  // Enquiry-only quote fields, populated by issueQuoteAdmin and surfaced
+  // on the detail panel so the admin sees what was committed when they
+  // convert to a booking.
+  quote_service_fee?: number | string | null;
+  quote_govt_fees?: number | string | null;
+  quote_cycle?: string | null;
+  quote_valid_until?: string | null;
+  quote_terms?: string | null;
+  notes?: string | null;
 }
 
 type StagesMap = Partial<Record<StageKey, PipelineRecord[]>>;
@@ -107,9 +116,14 @@ function EnquiryActionPanel({ enquiry, canUpdate, onUpdated, onMessage }: Enquir
   const update = <K extends keyof QuoteForm>(k: K, v: QuoteForm[K]): void =>
     setForm((p) => ({ ...p, [k]: v }));
 
+  // Local success state — shown inline below the form so the user sees
+  // confirmation immediately without scrolling to the page-level toast.
+  const [success, setSuccess] = useState<string | null>(null);
+
   const submitQuote = async (e?: FormEvent<HTMLFormElement>): Promise<void> => {
     e?.preventDefault?.();
     setErr(null);
+    setSuccess(null);
     if (!form.service_fee || Number.isNaN(Number(form.service_fee))) {
       setErr('Service fee (₹) is required.');
       return;
@@ -123,8 +137,12 @@ function EnquiryActionPanel({ enquiry, canUpdate, onUpdated, onMessage }: Enquir
         valid_until: form.valid_until || null,
         terms: form.terms || null,
       });
+      const customerName = enquiry.customer?.name || 'customer';
+      setSuccess(
+        `✓ Quote sent to ${customerName}. They'll see it in their app shortly.`,
+      );
       onMessage?.(
-        `Quote sent to ${enquiry.customer?.name || 'customer'} — they'll see it in their app.`,
+        `Quote sent to ${customerName} — they'll see it in their app.`,
       );
       onUpdated?.();
     } catch (e2: any) {
@@ -155,7 +173,25 @@ function EnquiryActionPanel({ enquiry, canUpdate, onUpdated, onMessage }: Enquir
 
   const isPending = enquiry.status === 'pending';
   const isQuoted = enquiry.status === 'quoted';
+  const isAccepted = enquiry.status === 'accepted';
   const isRejected = enquiry.status === 'rejected';
+
+  const handleConvertToBooking = async (): Promise<void> => {
+    setErr(null);
+    setSuccess(null);
+    setBusy(true);
+    try {
+      const res: any = await b2bAPI.convertToBooking(enquiry.id);
+      const msg = res?.message || 'Booking created. Open Order Management to assign a representative.';
+      setSuccess(`✓ ${msg}`);
+      onMessage?.(msg);
+      onUpdated?.();
+    } catch (e2: any) {
+      setErr(e2.message || String(e2));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!canUpdate) {
     return (
@@ -166,13 +202,21 @@ function EnquiryActionPanel({ enquiry, canUpdate, onUpdated, onMessage }: Enquir
   return (
     <div className="border-t pt-4 space-y-4">
       {/* Status context strip */}
-      <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900">
+      <div
+        className={`rounded p-3 text-xs border ${
+          isAccepted
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+            : 'bg-amber-50 border-amber-200 text-amber-900'
+        }`}
+      >
         <p className="font-semibold">📝 Industrial enquiry — {enquiry.status}</p>
         <p className="mt-1 text-[11px]">
           {isPending &&
             "The customer is waiting for a quote. Fill in the fee + terms below and press Send Quote — they'll get an in-app push."}
           {isQuoted &&
             'Quote already sent. Waiting for customer to accept. You can revise below if needed.'}
+          {isAccepted &&
+            'Customer accepted the quote 🎉 — convert this enquiry into a Booking, then assign a representative from Order Management.'}
           {isRejected && 'This enquiry is marked rejected. The customer has been notified.'}
         </p>
       </div>
@@ -181,7 +225,43 @@ function EnquiryActionPanel({ enquiry, canUpdate, onUpdated, onMessage }: Enquir
         <div className="bg-red-50 border border-red-200 text-red-800 rounded p-2 text-xs">{err}</div>
       )}
 
-      {!isRejected && (
+      {success && (
+        <div className="bg-emerald-50 border border-emerald-300 text-emerald-900 rounded p-3 text-sm font-semibold">
+          {success}
+        </div>
+      )}
+
+      {/* Convert-to-Booking — only after the customer has accepted the quote.
+          One click moves the work into Order Management where the existing
+          rep-assignment flow handles the rest. Idempotent on the backend. */}
+      {isAccepted && (
+        <div className="bg-white border border-emerald-300 rounded-lg p-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-900">
+            🚀 Move to execution
+          </p>
+          <p className="text-xs text-gray-600">
+            Quoted total:{' '}
+            <span className="font-semibold text-gray-900">
+              ₹{Number(enquiry.quote_service_fee || 0) + Number(enquiry.quote_govt_fees || 0)}
+            </span>
+            {enquiry.quote_cycle && ` · ${enquiry.quote_cycle.replace(/_/g, ' ')} billing`}
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={handleConvertToBooking}
+            className="px-4 py-2 text-white text-sm rounded font-semibold disabled:opacity-50"
+            style={{ backgroundColor: 'var(--brand-primary)' }}
+          >
+            {busy ? 'Converting…' : 'Convert to Booking + Assign Rep'}
+          </button>
+          <p className="text-[10px] text-gray-500">
+            Creates a pending booking. Open Order Management to pick a representative.
+          </p>
+        </div>
+      )}
+
+      {!isRejected && !isAccepted && (
         <form onSubmit={submitQuote} className="space-y-3">
           <p className="text-sm font-semibold text-gray-900">
             {isQuoted ? 'Revise quote' : 'Issue quote'}
@@ -318,7 +398,23 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
       setError(null);
       try {
         const data = await b2bAPI.getPipeline();
-        if (!cancelled) setStages(data && typeof data === 'object' ? (data as StagesMap) : {});
+        if (cancelled) return;
+        const fresh = data && typeof data === 'object' ? (data as StagesMap) : {};
+        setStages(fresh);
+        // After a refetch, refresh the currently-selected enquiry/booking
+        // with its new copy from the pipeline so the detail panel reflects
+        // the latest status (e.g. pending → quoted after Send Quote).
+        // Without this the modal keeps showing the pre-update form and
+        // the user thinks nothing happened.
+        setSelected((prev) => {
+          if (!prev) return prev;
+          for (const arr of Object.values(fresh)) {
+            if (!Array.isArray(arr)) continue;
+            const updated = arr.find((r: any) => r?.id === prev.id);
+            if (updated) return updated as PipelineRecord;
+          }
+          return prev;
+        });
       } catch (e: any) {
         if (!cancelled) setError(e.message || String(e));
       } finally {
@@ -342,6 +438,31 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
       completed: stages.completed?.length || 0,
       cancelled: stages.cancelled?.length || 0,
     };
+  }, [stages]);
+
+  // Quote-status summary across ALL enquiries in the pipeline. Lets a
+  // Super Admin / B2B admin see at a glance: how many quotes are
+  // waiting on us (pending), how many we've sent (quoted), how many
+  // the customer has accepted / rejected. Surfaced as four stat cards
+  // above the kanban so admins don't have to dig through stages to
+  // find which files are still in review state.
+  const quoteSummary = useMemo(() => {
+    const summary = { awaiting: 0, sent: 0, accepted: 0, rejected: 0 };
+    if (!stages) return summary;
+    Object.values(stages).forEach((arr) => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach((rec) => {
+        // Only count records that started as enquiries — not B2B
+        // bookings already past the quote stage.
+        if (rec.kind !== 'enquiry' && !rec.quote_service_fee) return;
+        const s = rec.status;
+        if (s === 'pending') summary.awaiting += 1;
+        else if (s === 'quoted') summary.sent += 1;
+        else if (s === 'accepted') summary.accepted += 1;
+        else if (s === 'rejected') summary.rejected += 1;
+      });
+    });
+    return summary;
   }, [stages]);
 
   const moveToMilestone = async (booking: PipelineRecord, stage: Stage): Promise<void> => {
@@ -412,6 +533,50 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
       {actionMsg && (
         <div className="p-3 rounded bg-blue-50 border border-blue-200 text-blue-800 text-sm">
           {actionMsg}
+        </div>
+      )}
+
+      {/* Quote-status summary — at-a-glance view of which enquiries are
+          awaiting a quote vs already sent vs accepted/rejected. Click
+          the awaiting card to see what needs attention. */}
+      {stages && (quoteSummary.awaiting + quoteSummary.sent + quoteSummary.accepted + quoteSummary.rejected) > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+            <div className="text-[11px] font-bold text-amber-700 uppercase tracking-wider">
+              Awaiting Quote
+            </div>
+            <div className="text-2xl font-black text-amber-900 mt-1">
+              {quoteSummary.awaiting}
+            </div>
+            <div className="text-[10px] text-amber-700 mt-0.5">Customer waiting on us</div>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+            <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">
+              Quote Sent
+            </div>
+            <div className="text-2xl font-black text-blue-900 mt-1">
+              {quoteSummary.sent}
+            </div>
+            <div className="text-[10px] text-blue-700 mt-0.5">In customer review</div>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+            <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">
+              Accepted
+            </div>
+            <div className="text-2xl font-black text-emerald-900 mt-1">
+              {quoteSummary.accepted}
+            </div>
+            <div className="text-[10px] text-emerald-700 mt-0.5">Ready to convert to booking</div>
+          </div>
+          <div className="bg-rose-50 border border-rose-200 rounded-lg px-4 py-3">
+            <div className="text-[11px] font-bold text-rose-700 uppercase tracking-wider">
+              Rejected
+            </div>
+            <div className="text-2xl font-black text-rose-900 mt-1">
+              {quoteSummary.rejected}
+            </div>
+            <div className="text-[10px] text-rose-700 mt-0.5">Customer declined the quote</div>
+          </div>
         </div>
       )}
 

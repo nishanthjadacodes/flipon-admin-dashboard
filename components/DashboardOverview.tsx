@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { dashboardAPI, agentsAPI } from '@/utils/api';
+import { CAP, can } from '@/utils/rbac';
 
 type StatusKey =
   | 'completed'
@@ -182,7 +183,8 @@ interface AgentRecord {
 interface BookingRecord {
   id: string;
   status?: string;
-  service?: { name?: string };
+  booking_type?: 'consumer' | 'industrial' | string;
+  service?: { name?: string; service_type?: 'consumer' | 'industrial' | string };
   customer?: { name?: string };
   final_price?: number;
   price_quoted?: number;
@@ -270,15 +272,22 @@ function derivePendingActions({
 
 export interface DashboardOverviewProps {
   notifications?: number;
+  userRole?: string;
 }
 
-export default function DashboardOverview({ notifications }: DashboardOverviewProps) {
+export default function DashboardOverview({ notifications, userRole = 'super_admin' }: DashboardOverviewProps) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [recent, setRecent] = useState<BookingRecord[]>([]);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [pendingDocs, setPendingDocs] = useState<BookingRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<Error | null>(null);
+
+  // B2B / Industrial Admin scope: hide consumer bookings, agent management,
+  // and any "field rep" oriented panel. Their dashboard becomes purely an
+  // industrial-pipeline overview.
+  const b2bOnly = can(userRole, CAP.SCOPE_B2B_ONLY);
+  const canSeeAgents = can(userRole, CAP.AGENT_VIEW);
 
   useEffect(() => {
     const load = async (): Promise<void> => {
@@ -288,7 +297,10 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
         const [summaryData, recentData, agentsData, pendingDocsData] = await Promise.all([
           dashboardAPI.getSummary(),
           dashboardAPI.getRecentBookings(5),
-          agentsAPI.getPerformance(20),
+          // Skip the agent-performance call entirely when the role can't
+          // view agents — saves a needless round-trip and removes any risk
+          // of the data leaking via dev-tools / network tab.
+          canSeeAgents ? agentsAPI.getPerformance(20) : Promise.resolve([]),
           dashboardAPI.getPendingDocumentation(),
         ]);
         setSummary(summaryData as DashboardSummary | null);
@@ -307,7 +319,14 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
     load();
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userRole]);
+
+  // Apply the B2B scope to the data we display: industrial bookings only.
+  const isIndustrial = (b: BookingRecord): boolean =>
+    (b.booking_type || b.service?.service_type || 'consumer') === 'industrial';
+  const visibleRecent = b2bOnly ? recent.filter(isIndustrial) : recent;
+  const visiblePendingDocs = b2bOnly ? pendingDocs.filter(isIndustrial) : pendingDocs;
 
   if (loading && !summary) {
     return (
@@ -333,9 +352,18 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
     );
   }
 
-  const alerts = deriveAlerts({ agents, pendingDocs, summary });
-  const pendingActions = derivePendingActions({ pendingDocs, agents });
-  const lowPerformers = (agents || []).filter((a) => (a.rating ?? 5) < 4.0);
+  const alerts = deriveAlerts({
+    agents: canSeeAgents ? agents : [],
+    pendingDocs: visiblePendingDocs,
+    summary,
+  });
+  const pendingActions = derivePendingActions({
+    pendingDocs: visiblePendingDocs,
+    agents: canSeeAgents ? agents : [],
+  });
+  const lowPerformers = canSeeAgents
+    ? (agents || []).filter((a) => (a.rating ?? 5) < 4.0)
+    : [];
 
   const handleAction = (action: PendingAction): void => {
     window.dispatchEvent(
@@ -411,14 +439,25 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
           accent="b"
           onClick={() => navigateToSection('orders')}
         />
-        <MetricCard
-          title="Active Field Representatives"
-          value={`${summary?.agents?.active ?? 0} / ${summary?.agents?.total ?? 0}`}
-          hint="Online right now"
-          icon="👤"
-          accent="t"
-          onClick={() => navigateToSection('agents')}
-        />
+        {canSeeAgents ? (
+          <MetricCard
+            title="Active Field Representatives"
+            value={`${summary?.agents?.active ?? 0} / ${summary?.agents?.total ?? 0}`}
+            hint="Online right now"
+            icon="👤"
+            accent="t"
+            onClick={() => navigateToSection('agents')}
+          />
+        ) : (
+          <MetricCard
+            title="Industrial Files"
+            value={visibleRecent.length}
+            hint="Recent industrial bookings"
+            icon="🏭"
+            accent="t"
+            onClick={() => navigateToSection('b2b')}
+          />
+        )}
         <MetricCard
           title="Gross Revenue (MTD)"
           value={money(summary?.revenue?.thisMonth ?? 0)}
@@ -480,82 +519,166 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
             )}
           </div>
 
-          {/* Recent orders */}
+          {/* Recent orders — table layout on md+ screens, stacked card
+              layout on mobile/tablet so long UUIDs and service names
+              don't overlap. The table version uses fixed column widths
+              + truncate so each column stays in its lane. */}
           <div className="bg-white rounded-lg shadow p-6 border border-gray-200 lift">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Orders</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-2">Order ID</th>
-                    <th className="text-left py-2">Customer</th>
-                    <th className="text-left py-2">Service</th>
-                    <th className="text-left py-2">Status</th>
-                    <th className="text-left py-2">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(recent || []).map((o) => (
-                    <tr key={o.id} className="border-b">
-                      <td className="py-2 font-medium">{o.id}</td>
-                      <td className="py-2">{o.customer?.name || '—'}</td>
-                      <td className="py-2">{o.service?.name || '—'}</td>
-                      <td className="py-2">
-                        <span
-                          className={`px-2 py-1 rounded-full text-xs ${
-                            statusTone[o.status as StatusKey] || 'bg-gray-100 text-gray-800'
-                          }`}
-                        >
-                          {(o.status || '').replace('_', ' ')}
-                        </span>
-                      </td>
-                      <td className="py-2">
-                        {money(
-                          Number(o.final_price) ||
-                            Number(o.price_quoted) ||
-                            Number(o.amount) ||
-                            0,
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              {b2bOnly ? 'Recent Industrial Files' : 'Recent Orders'}
+            </h3>
+
+            {visibleRecent.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                {b2bOnly ? 'No recent industrial files.' : 'No recent orders yet.'}
+              </p>
+            ) : (
+              <>
+                {/* Mobile / tablet card layout (< md). Each order is a
+                    self-contained block — no horizontal scrolling, no
+                    truncation collisions. */}
+                <ul className="space-y-3 md:hidden">
+                  {visibleRecent.map((o) => {
+                    const amount = money(
+                      Number(o.final_price) || Number(o.price_quoted) || Number(o.amount) || 0,
+                    );
+                    return (
+                      <li
+                        key={o.id}
+                        className="border border-gray-200 rounded-lg p-3 text-sm"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-gray-900 truncate">
+                              {o.customer?.name || '—'}
+                            </p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {o.service?.name || '—'}
+                            </p>
+                          </div>
+                          <span
+                            className={`shrink-0 px-2 py-0.5 rounded-full text-xs ${
+                              statusTone[o.status as StatusKey] || 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {(o.status || '').replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
+                          <span className="font-mono truncate" title={String(o.id)}>
+                            #{String(o.id).slice(0, 8)}
+                          </span>
+                          <span className="font-semibold text-gray-900">{amount}</span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {/* Desktop table layout (md+). table-fixed enforces the
+                    column widths so long values truncate instead of
+                    pushing into the next column. */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-sm table-fixed">
+                    <colgroup>
+                      <col className="w-[100px]" />
+                      <col className="w-[28%]" />
+                      <col className="w-[32%]" />
+                      <col className="w-[120px]" />
+                      <col className="w-[100px]" />
+                    </colgroup>
+                    <thead>
+                      <tr className="border-b text-xs uppercase tracking-wide text-gray-500">
+                        <th className="text-left py-2 font-semibold">Order</th>
+                        <th className="text-left py-2 font-semibold">{b2bOnly ? 'Company' : 'Customer'}</th>
+                        <th className="text-left py-2 font-semibold">Service</th>
+                        <th className="text-left py-2 font-semibold">Status</th>
+                        <th className="text-right py-2 font-semibold">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRecent.map((o) => (
+                        <tr key={o.id} className="border-b last:border-b-0">
+                          <td
+                            className="py-3 pr-2 font-mono text-xs text-gray-700 truncate"
+                            title={String(o.id)}
+                          >
+                            #{String(o.id).slice(0, 8)}
+                          </td>
+                          <td
+                            className="py-3 pr-2 truncate"
+                            title={o.customer?.name || ''}
+                          >
+                            {o.customer?.name || '—'}
+                          </td>
+                          <td
+                            className="py-3 pr-2 truncate text-gray-600"
+                            title={o.service?.name || ''}
+                          >
+                            {o.service?.name || '—'}
+                          </td>
+                          <td className="py-3 pr-2">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${
+                                statusTone[o.status as StatusKey] || 'bg-gray-100 text-gray-800'
+                              }`}
+                            >
+                              {(o.status || '').replace('_', ' ')}
+                            </span>
+                          </td>
+                          <td className="py-3 text-right font-semibold whitespace-nowrap">
+                            {money(
+                              Number(o.final_price) ||
+                                Number(o.price_quoted) ||
+                                Number(o.amount) ||
+                                0,
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
         <div className="space-y-6">
-          {/* Low-performance agents panel */}
-          <div className="bg-white rounded-lg shadow p-6 border border-gray-200 lift">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Low-Performance Representatives</h3>
-            {lowPerformers.length === 0 ? (
-              <p className="text-sm text-gray-500">All representatives above 4.0 rating.</p>
-            ) : (
-              <div className="space-y-3">
-                {lowPerformers.map((a) => (
-                  <div
-                    key={a.id}
-                    className="flex items-center justify-between p-3 border border-yellow-200 bg-yellow-50 rounded-lg"
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{a.name}</p>
-                      <p className="text-xs text-gray-600">
-                        Rating {a.rating} · {a.total_jobs_completed ?? 0} jobs
-                      </p>
-                    </div>
-                    <span
-                      className={`text-xs px-2 py-1 rounded-full ${
-                        a.online_status ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-700'
-                      }`}
+          {/* Low-performance agents panel — hidden for roles without
+              AGENT_VIEW (e.g. B2B / Industrial Admin), per the spec:
+              no access to general field agent management. */}
+          {canSeeAgents && (
+            <div className="bg-white rounded-lg shadow p-6 border border-gray-200 lift">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Low-Performance Representatives</h3>
+              {lowPerformers.length === 0 ? (
+                <p className="text-sm text-gray-500">All representatives above 4.0 rating.</p>
+              ) : (
+                <div className="space-y-3">
+                  {lowPerformers.map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex items-center justify-between p-3 border border-yellow-200 bg-yellow-50 rounded-lg"
                     >
-                      {a.online_status ? 'online' : 'offline'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{a.name}</p>
+                        <p className="text-xs text-gray-600">
+                          Rating {a.rating} · {a.total_jobs_completed ?? 0} jobs
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xs px-2 py-1 rounded-full ${
+                          a.online_status ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-700'
+                        }`}
+                      >
+                        {a.online_status ? 'online' : 'offline'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Quick actions */}
           <div className="bg-white rounded-lg shadow p-6 border border-gray-200 lift">
@@ -571,16 +694,31 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
               >
                 📋 Review pending orders ({summary?.pendingActions ?? 0})
               </button>
-              <button
-                onClick={() =>
-                  window.dispatchEvent(
-                    new CustomEvent('admin:navigate', { detail: { section: 'agents' } }),
-                  )
-                }
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-left"
-              >
-                👥 Manage agents
-              </button>
+              {canSeeAgents ? (
+                <button
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent('admin:navigate', { detail: { section: 'agents' } }),
+                    )
+                  }
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-left"
+                >
+                  👥 Manage agents
+                </button>
+              ) : (
+                b2bOnly && (
+                  <button
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent('admin:navigate', { detail: { section: 'b2b' } }),
+                      )
+                    }
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-left"
+                  >
+                    🏭 Open B2B Pipeline
+                  </button>
+                )
+              )}
               <button
                 onClick={() =>
                   window.dispatchEvent(
@@ -594,15 +732,18 @@ export default function DashboardOverview({ notifications }: DashboardOverviewPr
             </div>
           </div>
 
-          {/* Performance summary */}
+          {/* Performance summary — drop the agent share for roles without
+              agent visibility (industrial admin, finance, etc.). */}
           <div className="bg-white rounded-lg shadow p-6 border border-gray-200 lift">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Performance Summary</h3>
             <div className="space-y-4">
-              <Bar
-                label="Active agent share"
-                value={percent(summary?.agents?.active, summary?.agents?.total)}
-                tone="bg-green-600"
-              />
+              {canSeeAgents && (
+                <Bar
+                  label="Active agent share"
+                  value={percent(summary?.agents?.active, summary?.agents?.total)}
+                  tone="bg-green-600"
+                />
+              )}
               <Bar
                 label="Bookings trend"
                 value={clamp(50 + (summary?.bookings?.deltaPct ?? 0), 0, 100)}

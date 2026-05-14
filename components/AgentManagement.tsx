@@ -24,6 +24,9 @@ interface AgentRecord {
   current_lng?: number | string;
   last_location_update?: string;
   referral_code?: string;
+  is_priority_user?: boolean;
+  royalty_forfeited_until?: string | null;
+  royalty_forfeit_reason?: string | null;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
@@ -59,12 +62,19 @@ function StatusBadges({ agent }: { agent: AgentRecord }) {
   const duty = dutyState(agent);
   return (
     <div className="flex flex-wrap gap-1">
+      {/* Account-approval badge — was previously labelled "active" /
+          "inactive" which conflicted with the duty badge ("online" /
+          "offline"). Admins read "active" as "currently working"
+          when it actually meant "account approved". Renamed to
+          "approved" / "deactivated" to remove the ambiguity. The
+          duty badge below is the single source of truth for whether
+          the rep is currently online. */}
       <span
         className={`px-2 py-0.5 rounded-full text-xs font-medium ${
           agent.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-700'
         }`}
       >
-        {agent.is_active ? 'active' : 'inactive'}
+        {agent.is_active ? 'approved' : 'deactivated'}
       </span>
       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${duty.tone}`}>
         {duty.label}
@@ -99,6 +109,19 @@ export interface AgentManagementProps {
 export default function AgentManagement({ userRole = 'super_admin' }: AgentManagementProps) {
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [selected, setSelected] = useState<AgentRecord | null>(null);
+
+  // When the user taps "View & act", scroll the detail panel into
+  // view. On mobile (single-column layout) it lives BELOW the agent
+  // list, so without this the click felt like a no-op — state did
+  // update but the panel was hundreds of pixels off-screen.
+  const openAgent = (agent: AgentRecord): void => {
+    setSelected(agent);
+    if (typeof document === 'undefined') return;
+    requestAnimationFrame(() => {
+      const panel = document.getElementById('agent-detail-panel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
   const [filterStatus, setFilterStatus] = useState<StatusFilter>('all');
   const [filterKyc, setFilterKyc] = useState<KycFilter>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -261,6 +284,77 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
     }
   };
 
+  // ─── Governance handlers (Refer & Earn policy section 4) ─────────────
+  const handleForfeitRoyalty = async (agent: AgentRecord): Promise<void> => {
+    const reason = window.prompt(
+      `Anti-poaching forfeit — ${agent.name}\n\nThe rep will lose all royalty earnings for the rest of the current quarter. Enter the evidence / reason (visible in the audit log):`,
+    );
+    if (!reason || !reason.trim()) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const res: any = await agentsAPI.forfeitRoyalty(agent.id, reason.trim());
+      const until = res?.data?.royalty_forfeited_until || null;
+      mutateLocal(agent.id, {
+        royalty_forfeited_until: until,
+        royalty_forfeit_reason: reason.trim(),
+      });
+      setActionMsg(`${agent.name}: royalty forfeited until ${String(until || '').slice(0, 10)}`);
+    } catch (e: any) {
+      setActionMsg(`Forfeit failed: ${e.message}`);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleClearForfeit = async (agent: AgentRecord): Promise<void> => {
+    if (!window.confirm(`Clear the royalty forfeit on ${agent.name}? They'll resume earning royalty next month.`)) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await agentsAPI.clearRoyaltyForfeit(agent.id);
+      mutateLocal(agent.id, {
+        royalty_forfeited_until: null,
+        royalty_forfeit_reason: null,
+      });
+      setActionMsg(`${agent.name}: royalty forfeit cleared`);
+    } catch (e: any) {
+      setActionMsg(`Clear forfeit failed: ${e.message}`);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleTerminateSelfReferral = async (agent: AgentRecord): Promise<void> => {
+    if (
+      !window.confirm(
+        `⚠️ Terminate ${agent.name}'s account for self-referral abuse?\n\n` +
+          `This is PERMANENT:\n` +
+          `• Account is deactivated immediately\n` +
+          `• All pending referrals on either side are expired\n` +
+          `• Royalty is forever forfeited\n\n` +
+          `Only proceed if you have confirmed evidence of duplicate-account self-referral.`,
+      )
+    ) return;
+    const reason = window.prompt('Enter the evidence / reason (audit log):');
+    if (!reason || !reason.trim()) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await agentsAPI.terminateForSelfReferral(agent.id, reason.trim());
+      mutateLocal(agent.id, {
+        is_active: false,
+        royalty_forfeited_until: '2099-12-31',
+        royalty_forfeit_reason: `Self-referral violation: ${reason.trim()}`,
+      });
+      setActionMsg(`${agent.name}: TERMINATED for self-referral abuse`);
+    } catch (e: any) {
+      setActionMsg(`Termination failed: ${e.message}`);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap justify-between items-center gap-3">
@@ -410,7 +504,7 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button
-                      onClick={() => setSelected(agent)}
+                      onClick={() => openAgent(agent)}
                       className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
                     >
                       View & act
@@ -449,7 +543,7 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
           )}
         </div>
 
-        <div className="space-y-6">
+        <div id="agent-detail-panel" className="space-y-6 scroll-mt-4">
           {!selected ? (
             <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-sm text-gray-500">
               {canApprove
@@ -590,6 +684,68 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                   </div>
                   <p className="text-xs text-gray-500 mt-2">
                     Payout details live in the Accounts section.
+                  </p>
+                </div>
+              )}
+
+              {/* Governance — anti-poaching + self-referral termination per the
+                  Refer & Earn policy section 4. Gated on canApprove (super
+                  admin only) since the actions take money / accounts away. */}
+              {canApprove && (
+                <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    Royalty Governance
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-4">
+                    Anti-poaching forfeits and self-referral termination. All
+                    actions are audit-logged.
+                  </p>
+
+                  {/* Active forfeit banner */}
+                  {selected.royalty_forfeited_until && (
+                    <div className="mb-3 p-3 rounded border border-amber-300 bg-amber-50 text-xs">
+                      <p className="font-semibold text-amber-900">
+                        ⚠ Royalty forfeited until{' '}
+                        {String(selected.royalty_forfeited_until).slice(0, 10)}
+                      </p>
+                      {selected.royalty_forfeit_reason && (
+                        <p className="text-amber-800 mt-1">
+                          Reason: {selected.royalty_forfeit_reason}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-2">
+                    {selected.royalty_forfeited_until ? (
+                      <button
+                        disabled={actionBusy}
+                        onClick={() => handleClearForfeit(selected)}
+                        className="px-3 py-2 border border-emerald-300 text-emerald-700 text-sm rounded hover:bg-emerald-50 disabled:opacity-50"
+                      >
+                        ↩️ Clear royalty forfeit
+                      </button>
+                    ) : (
+                      <button
+                        disabled={actionBusy}
+                        onClick={() => handleForfeitRoyalty(selected)}
+                        className="px-3 py-2 border border-amber-400 text-amber-700 text-sm rounded hover:bg-amber-50 disabled:opacity-50"
+                      >
+                        🚫 Forfeit royalty (this quarter)
+                      </button>
+                    )}
+                    <button
+                      disabled={actionBusy}
+                      onClick={() => handleTerminateSelfReferral(selected)}
+                      className="px-3 py-2 border-2 border-red-400 text-red-700 text-sm rounded hover:bg-red-50 disabled:opacity-50 font-semibold"
+                    >
+                      🛑 Terminate (self-referral abuse)
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-3 leading-relaxed">
+                    Forfeit pauses royalty for the current calendar quarter.
+                    Termination is permanent — deactivates the account and
+                    expires every pending referral on either side.
                   </p>
                 </div>
               )}

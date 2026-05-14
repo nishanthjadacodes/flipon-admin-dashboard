@@ -39,6 +39,10 @@ interface ServiceRecord {
   service_type?: ServiceTypeKind | string;
   pricing_model?: PricingModel | string;
   user_cost?: number | null;
+  govt_fees?: number | null;
+  partner_earning?: number | null;
+  company_margin?: number | null;
+  total_expense?: number | null;
   indicative_price_from?: number | null;
   indicative_price_to?: number | null;
   pricing_unit?: string;
@@ -67,6 +71,10 @@ interface ServiceEditPatch {
   description: string | null;
   is_active: boolean;
   user_cost?: number | null;
+  govt_fees?: number | null;
+  partner_earning?: number | null;
+  company_margin?: number | null;
+  total_expense?: number | null;
   indicative_price_from?: number | null;
   indicative_price_to?: number | null;
 }
@@ -80,6 +88,9 @@ interface ServiceEditorProps {
 
 interface EditorFormState {
   user_cost: number | string;
+  govt_fees: number | string;
+  partner_earning: number | string;
+  company_margin: number | string;
   indicative_price_from: number | string;
   indicative_price_to: number | string;
   expected_timeline: string;
@@ -90,12 +101,16 @@ interface EditorFormState {
 function ServiceEditor({ service, onSave, onCancel, busy }: ServiceEditorProps) {
   const [form, setForm] = useState<EditorFormState>({
     user_cost: service.user_cost ?? '',
+    govt_fees: service.govt_fees ?? '',
+    partner_earning: service.partner_earning ?? '',
+    company_margin: service.company_margin ?? '',
     indicative_price_from: service.indicative_price_from ?? '',
     indicative_price_to: service.indicative_price_to ?? '',
     expected_timeline: service.expected_timeline ?? '',
     description: service.description ?? '',
     is_active: !!service.is_active,
   });
+  const [editErr, setEditErr] = useState<string | null>(null);
 
   const isQuote = service.pricing_model === 'quote';
   const update = <K extends keyof EditorFormState>(k: K, v: EditorFormState[K]): void =>
@@ -103,6 +118,7 @@ function ServiceEditor({ service, onSave, onCancel, busy }: ServiceEditorProps) 
 
   const submit = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
+    setEditErr(null);
     const patch: ServiceEditPatch = {
       expected_timeline: form.expected_timeline || null,
       description: form.description || null,
@@ -114,7 +130,42 @@ function ServiceEditor({ service, onSave, onCancel, busy }: ServiceEditorProps) 
       patch.indicative_price_to =
         form.indicative_price_to === '' ? null : Number(form.indicative_price_to);
     } else {
-      patch.user_cost = form.user_cost === '' ? null : Number(form.user_cost);
+      const userCost = form.user_cost === '' ? null : Number(form.user_cost);
+      patch.user_cost = userCost;
+
+      // If admin filled any split field, validate they all add up to
+      // user_cost. Leaving all three blank is allowed — preserves the
+      // legacy behaviour of just bumping user_cost without re-keying
+      // the chart split.
+      const splitTouched =
+        form.govt_fees !== '' ||
+        form.partner_earning !== '' ||
+        form.company_margin !== '';
+      if (splitTouched) {
+        const govt = Number(form.govt_fees || 0);
+        const partner = Number(form.partner_earning || 0);
+        const margin = Number(form.company_margin || 0);
+        if (form.govt_fees === '' || form.partner_earning === '' || form.company_margin === '') {
+          setEditErr('When editing the split, fill all three fields (or leave all blank to keep existing).');
+          return;
+        }
+        if (userCost == null) {
+          setEditErr('Customer price is required when editing the split.');
+          return;
+        }
+        const sum = govt + partner + margin;
+        if (Math.round(sum) !== Math.round(userCost)) {
+          setEditErr(
+            `Split must add up to Customer Price (₹${userCost}). ` +
+            `Currently: ₹${govt} + ₹${partner} + ₹${margin} = ₹${sum}.`,
+          );
+          return;
+        }
+        patch.govt_fees = govt;
+        patch.partner_earning = partner;
+        patch.company_margin = margin;
+        patch.total_expense = govt + partner;
+      }
     }
     await onSave(patch);
   };
@@ -147,17 +198,94 @@ function ServiceEditor({ service, onSave, onCancel, busy }: ServiceEditorProps) 
           </label>
         </div>
       ) : (
-        <label className="text-sm block">
-          <span className="block text-gray-700 mb-1">Customer price ₹ (user_cost)</span>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={form.user_cost}
-            onChange={(e) => update('user_cost', e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-          />
-        </label>
+        <>
+          <label className="text-sm block">
+            <span className="block text-gray-700 mb-1">Customer price ₹ (user_cost)</span>
+            <input
+              type="number"
+              step="1"
+              min="0"
+              value={form.user_cost}
+              onChange={(e) => update('user_cost', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            />
+          </label>
+          {/* Rate-chart split — optional on edit (leave all blank to
+              keep the existing values), but if any field is touched all
+              three must be filled and must add up to user_cost. */}
+          <div className="mt-1 p-3 rounded-lg border border-gray-200 bg-gray-50 space-y-2">
+            <p className="text-xs font-semibold text-gray-700">
+              Rate-chart split (Govt + Service Partner + Company Margin = Customer Price)
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <label className="text-xs block">
+                <span className="block text-gray-600 mb-1">Govt Fees ₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={form.govt_fees}
+                  onChange={(e) => update('govt_fees', e.target.value)}
+                  className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                />
+              </label>
+              <label className="text-xs block">
+                <span className="block text-gray-600 mb-1">Service Partner ₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={form.partner_earning}
+                  onChange={(e) => update('partner_earning', e.target.value)}
+                  className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                />
+              </label>
+              <label className="text-xs block">
+                <span className="block text-gray-600 mb-1">Company Margin ₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  value={form.company_margin}
+                  onChange={(e) => update('company_margin', e.target.value)}
+                  className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                />
+              </label>
+            </div>
+            {(() => {
+              const userCost = Number(form.user_cost || 0);
+              const govt = Number(form.govt_fees || 0);
+              const partner = Number(form.partner_earning || 0);
+              const margin = Number(form.company_margin || 0);
+              const sum = govt + partner + margin;
+              const empty =
+                form.govt_fees === '' &&
+                form.partner_earning === '' &&
+                form.company_margin === '';
+              if (empty) {
+                return (
+                  <p className="text-[11px] text-gray-500">
+                    Leave blank to keep existing values, or fill all three to overwrite.
+                  </p>
+                );
+              }
+              const ok = userCost > 0 && Math.round(sum) === Math.round(userCost);
+              return (
+                <p
+                  className={`text-[11px] font-semibold ${
+                    ok ? 'text-green-700' : 'text-amber-700'
+                  }`}
+                >
+                  Sum: ₹{sum} {ok ? '✓ matches Customer Price' : `↔ Customer Price ₹${userCost} (off by ₹${userCost - sum})`}
+                </p>
+              );
+            })()}
+          </div>
+          {editErr && (
+            <div className="p-2 text-xs rounded bg-red-50 border border-red-200 text-red-800">
+              {editErr}
+            </div>
+          )}
+        </>
       )}
       <label className="text-sm block">
         <span className="block text-gray-700 mb-1">Expected timeline</span>
@@ -217,6 +345,13 @@ interface CreateServicePayload {
   description: string | null;
   allow_pay_after: boolean;
   user_cost?: number;
+  // Rate-chart split — required for fixed-price services so the
+  // booking flow, rep commission, and admin reports all use the
+  // same canonical numbers. Sum must equal user_cost.
+  govt_fees?: number;
+  partner_earning?: number;
+  company_margin?: number;
+  total_expense?: number;
   indicative_price_from?: number | null;
   indicative_price_to?: number | null;
 }
@@ -225,7 +360,37 @@ interface NewServiceModalProps {
   onClose: () => void;
   onCreate: (payload: CreateServicePayload) => Promise<void>;
   busy: boolean;
+  existingCategories: string[];
 }
+
+// Canonical category options shown in the Add Service dropdown. Includes
+// the categories we ship out of the box even when no service is using
+// them yet — without this, "Common Service Application" wasn't selectable
+// because the dropdown was a free-text input and admins had to remember
+// the exact spelling. The list merges with categories already present
+// in the services table so custom categories stay visible.
+const CANONICAL_CATEGORIES: string[] = [
+  'Common Service Application',
+  'Aadhaar Services',
+  'PAN Services',
+  'Voter ID Services',
+  'Passport Services',
+  'Driving Licence',
+  'Ration Card',
+  'Income Certificate',
+  'Caste Certificate',
+  'Domicile Certificate',
+  'Birth Certificate',
+  'Death Certificate',
+  'Marriage Certificate',
+  'GST / Business Registration',
+  'Property & Land Records',
+  'Banking & Finance',
+  'Travel & Bookings',
+  'Recharge & Utilities',
+  'Compliance & Licensing',
+  'Industrial / B2B',
+];
 
 interface NewFormState {
   name: string;
@@ -233,6 +398,9 @@ interface NewFormState {
   service_type: ServiceTypeKind;
   pricing_model: PricingModel;
   user_cost: string;
+  govt_fees: string;
+  partner_earning: string;
+  company_margin: string;
   indicative_price_from: string;
   indicative_price_to: string;
   expected_timeline: string;
@@ -240,7 +408,15 @@ interface NewFormState {
   allow_pay_after: boolean;
 }
 
-function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
+function NewServiceModal({ onClose, onCreate, busy, existingCategories }: NewServiceModalProps) {
+  // Merge canonical + existing, dedupe, alphabetize. "Other" sentinel
+  // sits at the bottom so admins can fall back to a free-text value
+  // when they really need to add a brand-new category.
+  const categoryOptions = useMemo<string[]>(() => {
+    const set = new Set<string>([...CANONICAL_CATEGORIES, ...existingCategories.filter(Boolean)]);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [existingCategories]);
+  const [customCategory, setCustomCategory] = useState<string>('');
   // Browser back closes the modal instead of leaving the services page.
   useModalBackClose(true, onClose);
   const [form, setForm] = useState<NewFormState>({
@@ -249,6 +425,9 @@ function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
     service_type: 'consumer',
     pricing_model: 'fixed',
     user_cost: '',
+    govt_fees: '',
+    partner_earning: '',
+    company_margin: '',
     indicative_price_from: '',
     indicative_price_to: '',
     expected_timeline: '',
@@ -286,7 +465,33 @@ function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
         setErr('Customer price is required for fixed-price services.');
         return;
       }
-      payload.user_cost = Number(form.user_cost);
+      const userCost = Number(form.user_cost);
+      const govt = Number(form.govt_fees || 0);
+      const partner = Number(form.partner_earning || 0);
+      const margin = Number(form.company_margin || 0);
+
+      // Require admin to specify the rate-chart split so the rep
+      // commission + company share are deterministic for every booking
+      // of this service. Sum must match user_cost exactly — a rupee
+      // off and the booking screen's bill summary will look wrong.
+      if (form.govt_fees === '' || form.partner_earning === '' || form.company_margin === '') {
+        setErr('Govt Fees, Service Partner Earning, and Company Margin are required for fixed-price services.');
+        return;
+      }
+      const splitSum = govt + partner + margin;
+      if (Math.round(splitSum) !== Math.round(userCost)) {
+        setErr(
+          `Split must add up to Customer Price (₹${userCost}). ` +
+          `Currently: ₹${govt} + ₹${partner} + ₹${margin} = ₹${splitSum}.`,
+        );
+        return;
+      }
+
+      payload.user_cost = userCost;
+      payload.govt_fees = govt;
+      payload.partner_earning = partner;
+      payload.company_margin = margin;
+      payload.total_expense = govt + partner; // FliponeX's outflow
     }
     try {
       await onCreate(payload);
@@ -320,14 +525,47 @@ function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
         <div className="grid grid-cols-2 gap-3">
           <label className="text-sm block">
             <span className="block text-gray-700 mb-1">Category</span>
-            <input
-              type="text"
+            <select
               required
-              value={form.category}
-              onChange={(e) => update('category', e.target.value)}
-              placeholder="e.g. Aadhaar Services"
+              value={
+                form.category && categoryOptions.includes(form.category)
+                  ? form.category
+                  : form.category
+                    ? '__other'
+                    : ''
+              }
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '__other') {
+                  // Keep whatever custom text is already typed (or empty)
+                  // so the input below shows up for the admin to fill in.
+                  update('category', customCategory);
+                } else {
+                  setCustomCategory('');
+                  update('category', v);
+                }
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-            />
+            >
+              <option value="" disabled>Select a category…</option>
+              {categoryOptions.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+              <option value="__other">Other (type custom)…</option>
+            </select>
+            {form.category !== '' && !categoryOptions.includes(form.category) && (
+              <input
+                type="text"
+                required
+                value={customCategory}
+                onChange={(e) => {
+                  setCustomCategory(e.target.value);
+                  update('category', e.target.value);
+                }}
+                placeholder="Enter custom category"
+                className="w-full mt-2 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+            )}
           </label>
           <label className="text-sm block">
             <span className="block text-gray-700 mb-1">Type</span>
@@ -379,18 +617,92 @@ function NewServiceModal({ onClose, onCreate, busy }: NewServiceModalProps) {
             </label>
           </div>
         ) : (
-          <label className="text-sm block">
-            <span className="block text-gray-700 mb-1">Customer price ₹</span>
-            <input
-              type="number"
-              required
-              step="0.01"
-              min="0"
-              value={form.user_cost}
-              onChange={(e) => update('user_cost', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-            />
-          </label>
+          <>
+            <label className="text-sm block">
+              <span className="block text-gray-700 mb-1">Customer price ₹ (user_cost)</span>
+              <input
+                type="number"
+                required
+                step="1"
+                min="0"
+                value={form.user_cost}
+                onChange={(e) => update('user_cost', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+            </label>
+            {/* Rate-chart split — required so the booking flow, rep
+                commission, and reports all derive from the same numbers
+                instead of best-guessing from user_cost alone. */}
+            <div className="mt-1 p-3 rounded-lg border border-gray-200 bg-gray-50 space-y-2">
+              <p className="text-xs font-semibold text-gray-700">
+                Rate-chart split (Govt Fees + Service Partner + Company Margin = Customer Price)
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-xs block">
+                  <span className="block text-gray-600 mb-1">Govt Fees ₹</span>
+                  <input
+                    type="number"
+                    required
+                    step="1"
+                    min="0"
+                    value={form.govt_fees}
+                    onChange={(e) => update('govt_fees', e.target.value)}
+                    className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                <label className="text-xs block">
+                  <span className="block text-gray-600 mb-1">Service Partner ₹</span>
+                  <input
+                    type="number"
+                    required
+                    step="1"
+                    min="0"
+                    value={form.partner_earning}
+                    onChange={(e) => update('partner_earning', e.target.value)}
+                    className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                <label className="text-xs block">
+                  <span className="block text-gray-600 mb-1">Company Margin ₹</span>
+                  <input
+                    type="number"
+                    required
+                    step="1"
+                    value={form.company_margin}
+                    onChange={(e) => update('company_margin', e.target.value)}
+                    className="w-full px-2 py-1.5 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+              </div>
+              {(() => {
+                // Live preview — green when split matches, amber when off.
+                const userCost = Number(form.user_cost || 0);
+                const govt = Number(form.govt_fees || 0);
+                const partner = Number(form.partner_earning || 0);
+                const margin = Number(form.company_margin || 0);
+                const sum = govt + partner + margin;
+                const ok = userCost > 0 && Math.round(sum) === Math.round(userCost);
+                const empty =
+                  !form.govt_fees && !form.partner_earning && !form.company_margin;
+                if (empty) {
+                  return (
+                    <p className="text-[11px] text-gray-500">
+                      Example for Aadhaar Address Update (₹275): Govt 75 + Partner 100 + Margin 100.
+                    </p>
+                  );
+                }
+                return (
+                  <p
+                    className={`text-[11px] font-semibold ${
+                      ok ? 'text-green-700' : 'text-amber-700'
+                    }`}
+                  >
+                    Sum: ₹{sum} {ok ? '✓ matches Customer Price' : `↔ Customer Price ₹${userCost} (off by ₹${userCost - sum})`}
+                  </p>
+                );
+              })()}
+            </div>
+          </>
         )}
         <label className="text-sm block">
           <span className="block text-gray-700 mb-1">Expected timeline</span>
@@ -639,8 +951,11 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-4">
+      {/* List takes the full row now. Details + Edit moved into a
+          viewport-centered modal so the admin doesn't have to scroll
+          past the rest of the catalog to view or edit a service. */}
+      <div className="space-y-4">
+        <div className="space-y-4">
           {loading && services.length === 0 ? (
             <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-center text-gray-500">
               Loading catalog…
@@ -745,26 +1060,49 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
           )}
         </div>
 
-        <div className="space-y-6">
-          {!selected ? (
-            <div className="bg-white rounded-lg shadow p-6 border border-gray-200 text-sm text-gray-500">
-              Select a service to see full details or edit it.
-            </div>
-          ) : (
-            <>
-              <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-                <div className="flex items-center justify-between mb-3">
+        {/* Details / Edit modal — opens centered in the viewport when a
+            service row's "View details" or "Edit" button is tapped.
+            Previously this was a right-column panel in a 3-col grid,
+            which on narrow screens (and on long lists) pushed the
+            details below the fold so the admin had to scroll to see
+            anything. Centered modal removes that friction. */}
+        {selected && (
+          <div
+            className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+            onClick={() => {
+              setSelected(null);
+              setEditing(false);
+            }}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl w-full max-w-2xl my-8 max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-4 sticky top-0 bg-white pt-1 pb-3 border-b border-gray-100 -mx-6 px-6">
                   <h3 className="text-lg font-semibold text-gray-900">
                     {editing ? 'Edit service' : 'Service details'}
                   </h3>
-                  {canEdit && !editing && (
+                  <div className="flex items-center gap-2">
+                    {canEdit && !editing && (
+                      <button
+                        onClick={() => setEditing(true)}
+                        className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        Edit
+                      </button>
+                    )}
                     <button
-                      onClick={() => setEditing(true)}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                      onClick={() => {
+                        setSelected(null);
+                        setEditing(false);
+                      }}
+                      className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500 text-xl leading-none"
+                      aria-label="Close"
                     >
-                      Edit
+                      ×
                     </button>
-                  )}
+                  </div>
                 </div>
                 {editing ? (
                   <ServiceEditor
@@ -845,27 +1183,27 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                     </div>
                   </div>
                 )}
-              </div>
 
-              {canDelete && (
-                <div className="bg-white rounded-lg shadow p-6 border border-gray-200">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Danger zone</h3>
-                  <button
-                    disabled={actionBusy}
-                    onClick={() => handleDelete(selected)}
-                    className="w-full px-3 py-2 border border-red-300 text-red-600 text-sm rounded hover:bg-red-50 disabled:opacity-50"
-                  >
-                    Delete service
-                  </button>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Deletes the service from the catalog. Bookings already placed against it are
-                    unaffected.
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+                {canDelete && (
+                  <div className="mt-6 pt-4 border-t border-gray-200">
+                    <h4 className="text-sm font-semibold text-red-600 mb-2">Danger zone</h4>
+                    <button
+                      disabled={actionBusy}
+                      onClick={() => handleDelete(selected)}
+                      className="w-full px-3 py-2 border border-red-300 text-red-600 text-sm rounded hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Delete service
+                    </button>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Deletes the service from the catalog. Bookings already placed against it are
+                      unaffected.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {showNew && (
@@ -873,6 +1211,7 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
           onClose={() => setShowNew(false)}
           onCreate={handleCreate}
           busy={actionBusy}
+          existingCategories={categories}
         />
       )}
     </div>

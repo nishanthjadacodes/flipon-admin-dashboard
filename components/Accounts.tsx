@@ -61,9 +61,18 @@ interface OperationalRow {
   revenue?: number | string;
 }
 
+interface RevenueBucket {
+  count?: number;
+  revenue?: number;
+  govt_fees?: number;
+  partner_earning?: number;
+  company_margin?: number;
+}
+
 interface MonthlyRevenue {
-  consumer?: { revenue?: number };
-  industrial?: { revenue?: number };
+  consumer?: RevenueBucket;
+  industrial?: RevenueBucket;
+  total?: RevenueBucket;
 }
 
 function RevenueSummary() {
@@ -107,6 +116,44 @@ function RevenueSummary() {
   const b2c = monthly?.consumer?.revenue || 0;
   const b2b = monthly?.industrial?.revenue || 0;
 
+  // Rate-chart split aggregates (last 30 days, paid bookings only).
+  // company_margin is the actual company profit — what each booking
+  // contributes after govt fees pass-through and the service partner's
+  // earning are subtracted. Bookings created before the price-split
+  // snapshot shipped will sum to 0 in these fields (intentional —
+  // no data fiction).
+  const total = monthly?.total;
+  const consumerSplit = monthly?.consumer;
+  const industrialSplit = monthly?.industrial;
+  const margin30 = Number(total?.company_margin || 0);
+  const govt30 = Number(total?.govt_fees || 0);
+  const partner30 = Number(total?.partner_earning || 0);
+  const grossSplit30 = Number(total?.revenue || 0);
+
+  const SplitRow = ({
+    label,
+    bucket,
+  }: {
+    label: string;
+    bucket?: RevenueBucket;
+  }) => (
+    <tr className="border-t border-gray-200">
+      <td className="py-2 pr-4 text-sm text-gray-700">{label}</td>
+      <td className="py-2 pr-4 text-sm text-right tabular-nums">
+        {money(Number(bucket?.revenue || 0))}
+      </td>
+      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600">
+        {money(Number(bucket?.govt_fees || 0))}
+      </td>
+      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600">
+        {money(Number(bucket?.partner_earning || 0))}
+      </td>
+      <td className="py-2 text-sm text-right tabular-nums font-semibold text-emerald-700">
+        {money(Number(bucket?.company_margin || 0))}
+      </td>
+    </tr>
+  );
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -119,6 +166,59 @@ function RevenueSummary() {
           hint="Last 30d"
           tone="bg-indigo-50"
         />
+      </div>
+
+      {/* Price-split breakdown — surfaces actual Company Margin separately
+          from gross revenue. Margin is what stays with the company after
+          govt fees (pass-through) and the service partner's earning. */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+        <div className="flex items-end justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">
+              Revenue split (last 30 days)
+            </h3>
+            <p className="text-xs text-gray-500">
+              Per rate chart · paid bookings only
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-gray-500">Company margin (30d)</p>
+            <p className="text-lg font-semibold text-emerald-700 tabular-nums">
+              {money(margin30)}
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <Card label="Gross revenue" value={money(grossSplit30)} tone="bg-gray-50" />
+          <Card label="Govt fees" value={money(govt30)} tone="bg-gray-50" hint="Pass-through" />
+          <Card label="Partner earning" value={money(partner30)} tone="bg-gray-50" hint="Service partners" />
+          <Card label="Company margin" value={money(margin30)} tone="bg-emerald-50" hint="Net to company" />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 uppercase tracking-wide">
+                <th className="text-left py-2 pr-4">Segment</th>
+                <th className="text-right py-2 pr-4">Gross</th>
+                <th className="text-right py-2 pr-4">Govt fees</th>
+                <th className="text-right py-2 pr-4">Partner</th>
+                <th className="text-right py-2">Company margin</th>
+              </tr>
+            </thead>
+            <tbody>
+              <SplitRow label="Consumer (B2C)" bucket={consumerSplit} />
+              <SplitRow label="Industrial (B2B)" bucket={industrialSplit} />
+              <SplitRow label="Total" bucket={total} />
+            </tbody>
+          </table>
+        </div>
+        {grossSplit30 > 0 && govt30 + partner30 + margin30 === 0 && (
+          <p className="mt-3 text-xs text-amber-700">
+            Margin shows ₹0 because the bookings in this window were created
+            before the price-split snapshot shipped. New bookings going
+            forward will populate this section.
+          </p>
+        )}
       </div>
     </div>
   );

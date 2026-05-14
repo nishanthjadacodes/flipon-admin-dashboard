@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ordersAPI, agentsAPI, documentsAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
@@ -65,6 +65,9 @@ interface OrderRecord {
   created_at?: string;
   customer?: CustomerLite;
   customer_name?: string;
+  // Person the service is FOR (e.g. a family member). NULL when the
+  // booking customer is also the applicant — fall back to customer name.
+  applicant_name?: string;
   customer_mobile?: string;
   service?: { name?: string };
   agent?: AgentLite;
@@ -698,6 +701,10 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
   const [verifyState, setVerifyState] = useState<Record<string, Partial<Record<CheckKey, boolean>>>>({});
   const [assignmentReason, setAssignmentReason] = useState<string>('');
   const [assignmentLog, setAssignmentLog] = useState<Record<string, AssignmentLogEntry[]>>({});
+  // Toast — green confirmation after a successful agent assignment.
+  // Auto-dismisses 3s after appearing. Lives inside this component so
+  // it's scoped to the orders flow only.
+  const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
   const canVerify = can(userRole, CAP.ORDER_VERIFY);
   const canAssign = can(userRole, CAP.ORDER_ASSIGN);
@@ -718,6 +725,11 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
         key: 'customer',
         label: 'customer_name',
         value: (o) => o.customer?.name || o.customer_name || '',
+      },
+      {
+        key: 'applicant_name',
+        label: 'applicant_name',
+        value: (o) => o.applicant_name || '',
       },
       {
         key: 'customer_mobile',
@@ -789,6 +801,45 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }, [selectedId]);
+
+  // ─── History-tracked Review-and-Act selection ────────────────────
+  // When an order is opened, push `#orders/<id>` so browser back
+  // clears the selection (back stack: dashboard → orders → order-id
+  // → … → exits dashboard). When popstate fires and the hash no
+  // longer carries an order id, clear selectedId. The historyDriven
+  // flag prevents an infinite push/pop loop.
+  const historyDrivenRef = useRef<boolean>(false);
+
+  const openOrder = useCallback((id: string): void => {
+    setSelectedId(id);
+    if (typeof window === 'undefined') return;
+    if (historyDrivenRef.current) return;
+    const targetHash = `#orders/${id}`;
+    if (window.location.hash !== targetHash) {
+      window.history.pushState({ section: 'orders', orderId: id }, '', targetHash);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onPop = (e: PopStateEvent): void => {
+      const state = (e.state as { section?: string; orderId?: string } | null) || null;
+      const hashTail = window.location.hash.replace(/^#orders\/?/, '');
+      const orderIdFromHash =
+        state?.section === 'orders' && state?.orderId
+          ? state.orderId
+          : hashTail && hashTail !== window.location.hash.replace(/^#/, '')
+          ? hashTail
+          : null;
+      historyDrivenRef.current = true;
+      setSelectedId(orderIdFromHash || null);
+      setTimeout(() => {
+        historyDrivenRef.current = false;
+      }, 0);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const checks: Partial<Record<CheckKey, boolean>> = (selected && verifyState[selected.id]) || {};
   const allVerified =
     !!selected &&
@@ -833,8 +884,17 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
         ],
       }));
       setAssignmentReason('');
+      // Toast confirmation. The agent gets notified via push + in-app
+      // banner separately (backend writes a Notification row on this
+      // assignment); the toast is for the admin doing the action.
+      setToast({
+        kind: 'success',
+        message: `Representative ${agent?.name || 'assigned'} successfully — they've been notified.`,
+      });
+      setTimeout(() => setToast(null), 3500);
     } catch (e: any) {
-      alert(`Assignment failed: ${e.message}`);
+      setToast({ kind: 'error', message: `Assignment failed: ${e.message}` });
+      setTimeout(() => setToast(null), 5000);
     }
   };
 
@@ -903,6 +963,31 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
 
   return (
     <div className="space-y-6">
+      {/* Floating toast — surfaces success/error after admin actions
+          like agent assignment. Slides in from the bottom-right; auto-
+          dismisses after a few seconds. */}
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-6 right-6 z-[9998] max-w-sm px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 ${
+            toast.kind === 'success'
+              ? 'bg-emerald-600 text-white'
+              : 'bg-rose-600 text-white'
+          }`}
+          style={{ animation: 'slideInUp 0.25s ease-out' }}
+        >
+          <span className="text-xl">{toast.kind === 'success' ? '✓' : '⚠'}</span>
+          <span className="text-sm font-medium">{toast.message}</span>
+          <button
+            onClick={() => setToast(null)}
+            aria-label="Dismiss"
+            className="ml-2 opacity-70 hover:opacity-100 text-lg leading-none"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="flex flex-wrap justify-between items-center gap-3">
         <div>
           <h2 className="text-3xl font-bold text-gray-900">Order Management</h2>
@@ -997,6 +1082,17 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
                       <p className="text-xs text-gray-500">
                         {o.customer?.mobile || o.customer?.email || ''}
                       </p>
+                      {/* Applicant = the person the service is FOR.
+                          Shown only when different from the customer
+                          (i.e. customer booked on a family member's
+                          behalf) — otherwise it'd just duplicate. */}
+                      {o.applicant_name &&
+                        o.applicant_name !== (o.customer?.name || o.customer_name) && (
+                          <p className="mt-1 text-xs text-indigo-700">
+                            <span className="font-medium">Applicant:</span>{' '}
+                            {o.applicant_name}
+                          </p>
+                        )}
                     </div>
                     <div>
                       <p className="font-medium text-gray-900">Service</p>
@@ -1018,7 +1114,7 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button
-                      onClick={() => setSelectedId(o.id)}
+                      onClick={() => openOrder(o.id)}
                       className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
                     >
                       {readOnly ? 'View details' : 'Review & act'}
@@ -1053,6 +1149,22 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
                     <p className="text-gray-600">{selected.customer?.mobile}</p>
                     <p className="text-gray-600">{selected.customer?.email}</p>
                   </div>
+                  {selected.applicant_name &&
+                    selected.applicant_name !==
+                      (selected.customer?.name || selected.customer_name) && (
+                      <div className="rounded-md bg-indigo-50 border border-indigo-200 p-3">
+                        <p className="text-xs font-medium text-indigo-700 uppercase tracking-wide">
+                          Applicant
+                        </p>
+                        <p className="text-sm font-semibold text-gray-900">
+                          {selected.applicant_name}
+                        </p>
+                        <p className="text-xs text-gray-600 mt-1">
+                          Service is for this person; the booking was
+                          placed by {selected.customer?.name || 'the customer above'}.
+                        </p>
+                      </div>
+                    )}
                   {selected.address && (
                     <div>
                       <p className="font-medium text-gray-900">Address</p>

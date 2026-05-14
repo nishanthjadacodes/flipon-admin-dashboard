@@ -118,6 +118,11 @@ const ROLES: Record<Role, RoleSpec> = {
       CAP.SECTION_B2B,
       CAP.SECTION_VAULT,
       CAP.ORDER_VIEW,
+      // B2B Admin needs to assign reps to converted industrial bookings —
+      // they're the ones running the industrial liaisoning pipeline.
+      CAP.ORDER_ASSIGN,
+      CAP.ORDER_VERIFY,
+      CAP.ORDER_RESCHEDULE,
       CAP.SERVICE_VIEW,
       CAP.REPORT_SERVICE_DEMAND, CAP.REPORT_PENDING_DOCS,
       CAP.REPORT_REVENUE,

@@ -554,12 +554,13 @@ function ServiceDemandReport({ days, b2bOnly }: { days: number; b2bOnly: boolean
 interface PendingDocRow {
   id: string;
   status?: string;
-  service?: { name?: string };
+  booking_type?: 'consumer' | 'industrial' | string;
+  service?: { name?: string; service_type?: 'consumer' | 'industrial' | string };
   agent?: { name?: string };
   created_at?: string;
 }
 
-function PendingDocsReport() {
+function PendingDocsReport({ b2bOnly }: { b2bOnly: boolean }) {
   const [data, setData] = useState<PendingDocRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -579,8 +580,23 @@ function PendingDocsReport() {
 
   if (loading) return <p className="text-gray-500 text-sm">Loading pending documentation…</p>;
   if (error) return <p className="text-red-700 text-sm">Failed: {error}</p>;
-  if (!data || data.length === 0)
-    return <p className="text-gray-500 text-sm">Nothing pending 🎉</p>;
+
+  // B2B / Industrial Admin scope: hide consumer rows entirely. Match either
+  // booking.booking_type or booking.service.service_type so we work whether
+  // the backend tags the booking or only the underlying service.
+  const rows = b2bOnly
+    ? (data || []).filter(
+        (r) =>
+          (r.booking_type || r.service?.service_type || 'consumer') === 'industrial',
+      )
+    : (data || []);
+
+  if (rows.length === 0)
+    return (
+      <p className="text-gray-500 text-sm">
+        {b2bOnly ? 'No industrial bookings pending documentation.' : 'Nothing pending 🎉'}
+      </p>
+    );
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -595,7 +611,7 @@ function PendingDocsReport() {
           </tr>
         </thead>
         <tbody>
-          {data.map((b) => (
+          {rows.map((b) => (
             <tr key={b.id} className="border-b">
               <td className="py-2 px-3 font-mono text-xs">{String(b.id).slice(0, 8)}</td>
               <td className="py-2 px-3">{b.service?.name || '—'}</td>
@@ -636,7 +652,7 @@ export default function Reports({ userRole = 'super_admin' }: ReportsProps) {
     agents: <AgentPerformanceReport limit={50} />,
     revenue: <RevenueReport days={days === 7 ? 30 : days} b2bOnly={b2bOnly} />,
     service_demand: <ServiceDemandReport days={days === 7 ? 30 : days} b2bOnly={b2bOnly} />,
-    pending_docs: <PendingDocsReport />,
+    pending_docs: <PendingDocsReport b2bOnly={b2bOnly} />,
   };
 
   return (
