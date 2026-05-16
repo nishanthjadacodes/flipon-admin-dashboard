@@ -60,6 +60,9 @@ interface AgentLite {
 interface OrderRecord {
   id: string;
   ref?: string;
+  // Customer-facing sequential code from the backend (starts at 1000).
+  // Used by refOf() to render short display IDs like "FLP-1000".
+  booking_number?: number | string | null;
   status?: OrderStatus | string;
   booking_type?: 'consumer' | 'industrial' | string;
   created_at?: string;
@@ -325,7 +328,26 @@ function DocPreviewOverlay({
   );
 }
 
-const refOf = (o: OrderRecord): string => o.ref || `ORD-${String(o.id).padStart(4, '0')}`;
+// Short customer-facing reference code. Two paths:
+//
+//   1. New bookings (since the booking_number floor moved to 1000):
+//      "FLP-1000", "FLP-1001", … — short, sequential, easy to read
+//      over the phone with a customer.
+//   2. Old bookings whose booking_number is absent: derive a 4-char
+//      hex slug from the UUID — e.g. "FLP-1F8F" from
+//      "1f8fe081-5cb3-…". Deterministic per booking, never collides
+//      across the realistic working set.
+//
+// `o.ref` still wins if the backend explicitly set one, so manual
+// overrides keep working.
+const refOf = (o: OrderRecord): string => {
+  if (o.ref) return o.ref;
+  if (o.booking_number != null && o.booking_number !== '') {
+    return `FLP-${o.booking_number}`;
+  }
+  const slug = String(o.id || '').replace(/-/g, '').slice(0, 4).toUpperCase();
+  return slug ? `FLP-${slug}` : 'FLP-—';
+};
 const money = (n: unknown): string => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
 function StagePipeline({ status }: { status?: string }) {
@@ -1149,22 +1171,37 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
                     <p className="text-gray-600">{selected.customer?.mobile}</p>
                     <p className="text-gray-600">{selected.customer?.email}</p>
                   </div>
-                  {selected.applicant_name &&
-                    selected.applicant_name !==
-                      (selected.customer?.name || selected.customer_name) && (
+                  {/* Applicant block — ALWAYS rendered so the operator
+                      can confirm who the service is FOR even when the
+                      booking customer is the applicant themselves.
+                      Shows the captured name when present; otherwise
+                      falls back to "Same as customer" so the field is
+                      never silently absent. */}
+                  {(() => {
+                    const customerLabel =
+                      selected.customer?.name || selected.customer_name || '';
+                    const applicant = (selected.applicant_name || '').trim();
+                    const sameAsCustomer =
+                      !applicant ||
+                      applicant.toLowerCase() === customerLabel.toLowerCase();
+                    return (
                       <div className="rounded-md bg-indigo-50 border border-indigo-200 p-3">
                         <p className="text-xs font-medium text-indigo-700 uppercase tracking-wide">
                           Applicant
                         </p>
                         <p className="text-sm font-semibold text-gray-900">
-                          {selected.applicant_name}
+                          {sameAsCustomer
+                            ? customerLabel || '—'
+                            : applicant}
                         </p>
                         <p className="text-xs text-gray-600 mt-1">
-                          Service is for this person; the booking was
-                          placed by {selected.customer?.name || 'the customer above'}.
+                          {sameAsCustomer
+                            ? 'The customer is the applicant for this service.'
+                            : `Service is for this person; the booking was placed by ${customerLabel || 'the customer above'}.`}
                         </p>
                       </div>
-                    )}
+                    );
+                  })()}
                   {selected.address && (
                     <div>
                       <p className="font-medium text-gray-900">Address</p>

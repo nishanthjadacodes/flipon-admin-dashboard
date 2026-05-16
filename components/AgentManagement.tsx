@@ -49,6 +49,24 @@ const fmtRating = (r: unknown): string => {
 const shortId = (id: unknown): string =>
   typeof id === 'string' ? id.slice(0, 8) : String(id ?? '');
 
+// Short employee-style code shown in admin's rep details. MUST match
+// what the rep app shows in its home hero + profile screen — see
+// customerandroidapp/src/utils/agent/repCode.ts. Same derivation
+// (first 4 hex chars of UUID, uppercased, with REP- prefix) so the
+// rep can quote their code over the phone and admin recognises it
+// immediately. Falls back to the explicit agent_code if the backend
+// ever starts assigning one.
+const repCode = (agent: { id?: unknown; agent_code?: string | null }): string => {
+  if (agent.agent_code && String(agent.agent_code).trim()) {
+    return String(agent.agent_code).trim();
+  }
+  const slug = String(agent.id || '')
+    .replace(/-/g, '')
+    .slice(0, 4)
+    .toUpperCase();
+  return slug ? `REP-${slug}` : 'REP-—';
+};
+
 function dutyState(agent: AgentRecord): DutyState {
   if (!agent.is_active) return { label: 'inactive', tone: 'bg-gray-200 text-gray-700' };
   if (!agent.online_status) return { label: 'offline', tone: 'bg-gray-100 text-gray-600' };
@@ -362,7 +380,6 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
           <h2 className="text-3xl font-bold text-gray-900">Representative Management</h2>
           <p className="text-xs text-gray-500">
             {stats.total} total · {stats.online} online · {stats.pendingKyc} pending KYC
-            {canMonitor && ' · duty/location auto-refresh every 30s'}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -563,7 +580,12 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                   </div>
                   <div>
                     <p className="font-medium text-gray-900">Representative ID</p>
-                    <p className="text-gray-600 font-mono text-xs break-all">{selected.id}</p>
+                    <p className="text-gray-900 font-mono text-sm font-semibold">
+                      {repCode(selected as any)}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">
+                      Internal ref: {shortId(selected.id)}
+                    </p>
                   </div>
                   <div>
                     <p className="font-medium text-gray-900">Contact</p>
@@ -786,8 +808,8 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                     </p>
                   )}
                   <p className="text-xs text-gray-500 mt-3">
-                    Auto-refreshes every 30s. Your role can monitor duty/location but not approve,
-                    deactivate, or verify KYC — escalate to Super Admin if action is needed.
+                    Your role can monitor duty/location but not approve, deactivate, or verify
+                    KYC — escalate to Super Admin if action is needed.
                   </p>
                 </div>
               )}
