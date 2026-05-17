@@ -160,28 +160,21 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* Logout — wipes client-side auth state and redirects to the
-            portal/landing page (the role-toggle page across the two
-            apps + two websites). Destination URL is configured via
-            NEXT_PUBLIC_LANDING_URL on Vercel:
-              Vercel → Project Settings → Environment Variables →
-              add NEXT_PUBLIC_LANDING_URL = https://your-portal-url
-              → Redeploy (env vars don't auto-trigger a build).
-            When the env var is missing we surface that to the admin
-            via an alert so the "logout does nothing" failure mode
-            (just reloads the dashboard) is no longer silent. */}
+        {/* Logout — two behaviours, picked at runtime:
+            1. RUNNING INSIDE THE CUSTOMER APP's WEBVIEW (the usual path
+               for admin users — they open ModeSelectScreen, tap the
+               "Admin Dashboard" tile, which loads us in a WebView).
+               We post 'LOGOUT' on window.ReactNativeWebView so the
+               native WebViewScreen calls navigation.goBack(), returning
+               the user to ModeSelectScreen — the "toggle page" with
+               the 2 apps + 2 websites.
+            2. RUNNING IN A REGULAR BROWSER (no WebView bridge present).
+               Fall back to a URL redirect: NEXT_PUBLIC_LANDING_URL if
+               set, else just reload the admin URL with cleared storage.
+            Either way we wipe localStorage + sessionStorage first so
+            no stale auth state survives the log-out. */}
         <button
           onClick={() => {
-            const target = (process.env.NEXT_PUBLIC_LANDING_URL as string | undefined) || '';
-            if (!target) {
-              alert(
-                'Portal URL not configured.\n\n' +
-                  'Set NEXT_PUBLIC_LANDING_URL in Vercel → Project Settings → ' +
-                  'Environment Variables to your portal page (the toggle page ' +
-                  'between the 2 apps + 2 websites), then redeploy.',
-              );
-              return;
-            }
             if (
               typeof window !== 'undefined' &&
               !window.confirm('Log out and return to the portal?')
@@ -194,6 +187,21 @@ export default function Sidebar({
                 window.sessionStorage?.clear();
               }
             } catch (_) { /* private mode etc. */ }
+
+            // WebView path — the customer app injects
+            // window.ReactNativeWebView with a postMessage method.
+            const rnBridge =
+              typeof window !== 'undefined'
+                ? (window as any).ReactNativeWebView
+                : null;
+            if (rnBridge?.postMessage) {
+              rnBridge.postMessage('LOGOUT');
+              return;
+            }
+
+            // Browser path — env-var or fallback to /.
+            const target =
+              (process.env.NEXT_PUBLIC_LANDING_URL as string | undefined) || '/';
             if (typeof window !== 'undefined') {
               window.location.href = target;
             }
