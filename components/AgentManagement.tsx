@@ -46,9 +46,6 @@ const fmtRating = (r: unknown): string => {
   const n = Number(r);
   return Number.isFinite(n) && n > 0 ? n.toFixed(1) : '—';
 };
-const shortId = (id: unknown): string =>
-  typeof id === 'string' ? id.slice(0, 8) : String(id ?? '');
-
 // Short employee-style code shown in admin's rep details. MUST match
 // what the rep app shows in its home hero + profile screen — see
 // customerandroidapp/src/utils/agent/repCode.ts. Same FNV-1a hash
@@ -485,7 +482,7 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                         {agent.name || 'Unnamed agent'}
                       </h3>
                       <p className="text-xs text-gray-500">
-                        {shortId(agent.id)} · joined {fmtDate(agent.created_at)}
+                        {repCode(agent as any)} · joined {fmtDate(agent.created_at)}
                       </p>
                     </div>
                     <StatusBadges agent={agent} />

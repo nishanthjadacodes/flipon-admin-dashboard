@@ -177,7 +177,7 @@ export default function Sidebar({
           onClick={() => {
             if (
               typeof window !== 'undefined' &&
-              !window.confirm('Log out and return to the portal?')
+              !window.confirm('Do you want to logout?')
             ) {
               return;
             }

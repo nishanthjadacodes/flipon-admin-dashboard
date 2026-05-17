@@ -21,9 +21,6 @@ const fmtDate = (iso?: string | null): string => {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
 };
 
-const shortId = (id: unknown): string =>
-  typeof id === 'string' ? id.slice(0, 8) : String(id ?? '');
-
 type ServiceTypeKind = 'consumer' | 'industrial' | 'both';
 type PricingModel = 'fixed' | 'quote';
 
@@ -979,7 +976,7 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                     <div className="min-w-0">
                       <h3 className="text-lg font-semibold text-gray-900">{s.name}</h3>
                       <p className="text-xs text-gray-500">
-                        {shortId(s.id)} · updated {fmtDate(s.updated_at)}
+                        {shortCode('FLIPSER', s.id, 3)} · updated {fmtDate(s.updated_at)}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1">
