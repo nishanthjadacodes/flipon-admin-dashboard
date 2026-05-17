@@ -117,6 +117,40 @@ const qs = (params: Record<string, unknown>): string => {
   return s ? `?${s}` : '';
 };
 
+// ─── Flash Notifications ─────────────────────────────────────────────────
+// Splash banners shown to the customer app pre-login. Super admin only —
+// the dashboard's RBAC gate keeps non-super-admins out of the section UI.
+export interface FlashNotification {
+  id: string;
+  title: string;
+  body?: string | null;
+  image_url?: string | null;
+  cta_label?: string | null;
+  cta_url?: string | null;
+  audience: 'all' | 'guest' | 'logged_in';
+  priority: number;
+  is_active: boolean;
+  active_from?: string | null;
+  active_until?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+export const flashNotificationsAPI = {
+  list: (): Promise<unknown> => apiRequest('/flash-notifications'),
+  create: (payload: Partial<FlashNotification>): Promise<unknown> =>
+    apiRequest('/flash-notifications', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  update: (id: string, payload: Partial<FlashNotification>): Promise<unknown> =>
+    apiRequest(`/flash-notifications/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  remove: (id: string): Promise<unknown> =>
+    apiRequest(`/flash-notifications/${id}`, { method: 'DELETE' }),
+};
+
 // ─── Dashboard ────────────────────────────────────────────────────────────
 export const dashboardAPI = {
   getSummary: (): Promise<unknown> => apiRequest('/admin/dashboard/summary'),

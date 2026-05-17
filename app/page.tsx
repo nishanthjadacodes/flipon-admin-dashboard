@@ -8,6 +8,7 @@ import AgentManagement from '@/components/AgentManagement';
 import ServiceManagement from '@/components/ServiceManagement';
 import Reports from '@/components/Reports';
 import AdminControls from '@/components/AdminControls';
+import FlashNotifications from '@/components/FlashNotifications';
 import Helpdesk from '@/components/Helpdesk';
 import B2BPipeline from '@/components/B2BPipeline';
 import DocumentVault from '@/components/DocumentVault';
@@ -283,6 +284,7 @@ export default function Home() {
           { id: 'reports', cap: CAP.SECTION_REPORTS, el: <Reports userRole={userRole} /> },
           { id: 'helpdesk', cap: CAP.SECTION_HELPDESK, el: <Helpdesk userRole={userRole} /> },
           { id: 'admin', cap: CAP.SECTION_ADMIN, el: <AdminControls userRole={userRole} /> },
+          { id: 'flash-notifications', cap: CAP.SECTION_ADMIN, el: <FlashNotifications userRole={userRole} /> },
         ] as SectionEntry[]
       ).filter((s) => can(userRole, s.cap)),
     [notifications, userRole],

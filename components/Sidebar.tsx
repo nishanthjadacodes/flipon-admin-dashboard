@@ -24,6 +24,7 @@ const menuItems: MenuItem[] = [
   { id: 'helpdesk', label: 'Customer Support', icon: '📞', cap: CAP.SECTION_HELPDESK },
   { id: 'reports', label: 'Reports & Analytics', icon: '📈', cap: CAP.SECTION_REPORTS },
   { id: 'admin', label: 'Admin Controls', icon: '🔐', cap: CAP.SECTION_ADMIN },
+  { id: 'flash-notifications', label: 'Flash Notifications', icon: '📣', cap: CAP.SECTION_ADMIN },
 ];
 
 const ROLE_INITIALS: Record<string, string> = {
