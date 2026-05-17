@@ -5,6 +5,7 @@ import { helpdeskAPI, adminAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { downloadCsv } from '@/utils/csv';
 import { useModalBackClose } from '@/utils/useModalBackClose';
+import { shortCode } from '@/utils/shortCode';
 
 type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
 type TicketPriority = 'low' | 'medium' | 'high' | 'urgent';
@@ -454,8 +455,10 @@ function CustomerDetailPanel({
             <p className="text-gray-600">{localCustomer.name || '—'}</p>
           </div>
           <div>
-            <p className="font-medium text-gray-900">ID</p>
-            <p className="text-gray-600 font-mono text-xs break-all">{localCustomer.id}</p>
+            <p className="font-medium text-gray-900">Customer ID</p>
+            <p className="text-gray-900 font-mono text-sm font-semibold">
+              {shortCode('FLIPID', localCustomer.id, 3)}
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1020,8 +1023,11 @@ export default function Helpdesk({ userRole = 'super_admin' }: HelpdeskProps) {
                         <h3 className="text-lg font-semibold text-gray-900">
                           {c.name || 'Unnamed'}
                         </h3>
-                        <p className="text-xs text-gray-500">
-                          {shortId(c.id)} · joined {fmtDate(c.created_at)}
+                        <p className="text-xs text-gray-700 font-mono font-semibold">
+                          {shortCode('FLIPID', c.id, 3)}
+                          <span className="font-sans font-normal text-gray-500">
+                            {' '}· joined {fmtDate(c.created_at)}
+                          </span>
                         </p>
                       </div>
                       <span

@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useRef, type FormEvent, type ReactNode } from 'react';
 import { payoutsAPI, royaltyAPI, reportsAPI, agentsAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { downloadCsv } from '@/utils/csv';
 import { useModalBackClose } from '@/utils/useModalBackClose';
+import { getAdminSocket } from '@/utils/socket';
 
 // Finance & Accounts Admin home — revenue + royalty + wallet/payouts.
 
@@ -75,16 +76,34 @@ interface MonthlyRevenue {
   total?: RevenueBucket;
 }
 
+// Polls every 30s while the Revenue tab is visible. Why 30s and not
+// 60s like DashboardOverview: this panel shows the most "live" number
+// for the business — a payment that just landed should reflect within
+// half a minute, otherwise finance staff start refreshing manually.
+// We also pause polling when the browser tab is hidden so we don't
+// burn the backend with requests no one's looking at.
+const REVENUE_POLL_MS = 30_000;
+
 function RevenueSummary() {
   const [daily, setDaily] = useState<OperationalRow[] | null>(null);
   const [monthly, setMonthly] = useState<MonthlyRevenue | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  // Socket connection status — drives the "Live" indicator. When the
+  // socket is connected, finance staff see "Live · waiting for events";
+  // when it disconnects we fall back to the 30s poll (still works), and
+  // the indicator switches to the time-since-last-fetch label.
+  const [socketLive, setSocketLive] = useState<boolean>(false);
+  const loadRef = useRef<((isPoll?: boolean) => Promise<void>) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const load = async (): Promise<void> => {
-      setLoading(true);
+
+    const load = async (isPoll = false): Promise<void> => {
+      if (isPoll) setRefreshing(true);
+      else setLoading(true);
       try {
         const [d30, m30] = await Promise.all([
           reportsAPI.getOperational({ days: 30 }),
@@ -93,17 +112,102 @@ function RevenueSummary() {
         if (cancelled) return;
         setDaily(Array.isArray(d30) ? (d30 as OperationalRow[]) : []);
         setMonthly(m30 && typeof m30 === 'object' ? (m30 as MonthlyRevenue) : null);
+        setLastUpdated(new Date());
+        setError(null);
       } catch (e: any) {
         if (!cancelled) setError(e.message || String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     };
-    load();
+    loadRef.current = load;
+
+    load(false);
+
+    // Background poll — kept as a SAFETY NET behind the real-time socket.
+    // If the socket disconnects mid-session or an emit was missed, this
+    // 30s tick guarantees the figures still refresh on their own. Skipped
+    // while the tab is hidden so we don't burn the backend.
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      load(true);
+    }, REVENUE_POLL_MS);
+
+    // Refresh immediately when the user returns to the tab — covers the
+    // case where the laptop was asleep and many events fired.
+    const onVisibility = (): void => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        load(true);
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+
+    // ─── Real-time socket subscription ──────────────────────────────
+    // Backend emits `payment_verified` to every admin role room the
+    // instant a Razorpay payment is confirmed. We refresh the revenue
+    // figures immediately so the number ticks up in real time. The
+    // socket auto-reconnects, so we only need to wire listeners once.
+    let socket: ReturnType<typeof getAdminSocket> | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        socket = getAdminSocket();
+        setSocketLive(socket.connected);
+        const onConnect = (): void => setSocketLive(true);
+        const onDisconnect = (): void => setSocketLive(false);
+        const onPaymentVerified = (): void => {
+          if (cancelled) return;
+          loadRef.current?.(true);
+        };
+        socket.on('connect', onConnect);
+        socket.on('disconnect', onDisconnect);
+        socket.on('payment_verified', onPaymentVerified);
+
+        return () => {
+          cancelled = true;
+          clearInterval(id);
+          if (typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', onVisibility);
+          }
+          socket?.off('connect', onConnect);
+          socket?.off('disconnect', onDisconnect);
+          socket?.off('payment_verified', onPaymentVerified);
+        };
+      } catch (e) {
+        console.warn('[RevenueSummary] socket setup failed; falling back to polling only:', e);
+      }
+    }
+
     return () => {
       cancelled = true;
+      clearInterval(id);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
     };
   }, []);
+
+  // Human-friendly "Updated 12s ago" relative timestamp. Re-rendered
+  // every 10s via a state tick so the label stays accurate without
+  // re-fetching data.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 10_000);
+    return () => clearInterval(id);
+  }, []);
+  const updatedAgo = (() => {
+    if (!lastUpdated) return null;
+    const s = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
+    if (s < 5) return 'just now';
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m} min ago`;
+    return lastUpdated.toLocaleTimeString();
+  })();
 
   if (loading) return <p className="text-sm text-gray-500">Loading revenue summary…</p>;
   if (error) return <p className="text-sm text-red-700">Failed: {error}</p>;
@@ -138,17 +242,17 @@ function RevenueSummary() {
     bucket?: RevenueBucket;
   }) => (
     <tr className="border-t border-gray-200">
-      <td className="py-2 pr-4 text-sm text-gray-700">{label}</td>
-      <td className="py-2 pr-4 text-sm text-right tabular-nums">
+      <td className="py-2 pr-4 text-sm text-gray-700 whitespace-nowrap">{label}</td>
+      <td className="py-2 pr-4 text-sm text-right tabular-nums whitespace-nowrap">
         {money(Number(bucket?.revenue || 0))}
       </td>
-      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600">
+      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600 whitespace-nowrap">
         {money(Number(bucket?.govt_fees || 0))}
       </td>
-      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600">
+      <td className="py-2 pr-4 text-sm text-right tabular-nums text-gray-600 whitespace-nowrap">
         {money(Number(bucket?.partner_earning || 0))}
       </td>
-      <td className="py-2 text-sm text-right tabular-nums font-semibold text-emerald-700">
+      <td className="py-2 pr-1 text-sm text-right tabular-nums font-semibold text-emerald-700 whitespace-nowrap">
         {money(Number(bucket?.company_margin || 0))}
       </td>
     </tr>
@@ -156,6 +260,42 @@ function RevenueSummary() {
 
   return (
     <div className="space-y-4">
+      {/* Live indicator — three states:
+          • amber pulsing: a refresh is currently in flight
+          • green: real-time socket is connected (paid bookings update instantly)
+          • gray: socket disconnected, polling fallback still works every 30s
+          The relative timestamp tells how stale the data is regardless. */}
+      <div className="flex items-center justify-end gap-2 -mt-2 text-xs text-gray-500">
+        <span
+          className={`inline-block w-2 h-2 rounded-full ${
+            refreshing
+              ? 'bg-amber-500 animate-pulse'
+              : socketLive
+              ? 'bg-emerald-500'
+              : 'bg-gray-400'
+          }`}
+          aria-hidden
+          title={
+            refreshing
+              ? 'Refreshing…'
+              : socketLive
+              ? 'Live socket connected'
+              : 'Socket disconnected — using 30s polling'
+          }
+        />
+        <span>
+          {refreshing
+            ? 'Refreshing…'
+            : socketLive
+            ? updatedAgo
+              ? `Live · updated ${updatedAgo}`
+              : 'Live · listening for payments'
+            : updatedAgo
+            ? `Polling · updated ${updatedAgo}`
+            : 'Polling every 30s'}
+        </span>
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="Today" value={money(todaysRev)} hint="Running day total" />
         <Card label="Last 7 days" value={money(last7Total)} tone="bg-blue-50" />
@@ -194,15 +334,18 @@ function RevenueSummary() {
           <Card label="Partner earning" value={money(partner30)} tone="bg-gray-50" hint="Service partners" />
           <Card label="Company margin" value={money(margin30)} tone="bg-emerald-50" hint="Net to company" />
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        {/* Force horizontal scroll on narrow viewports — min-w guarantees
+            all 5 columns get their natural width so "Company margin"
+            doesn't get clipped under the screen edge on phones. */}
+        <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
+          <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wide">
-                <th className="text-left py-2 pr-4">Segment</th>
-                <th className="text-right py-2 pr-4">Gross</th>
-                <th className="text-right py-2 pr-4">Govt fees</th>
-                <th className="text-right py-2 pr-4">Partner</th>
-                <th className="text-right py-2">Company margin</th>
+                <th className="text-left py-2 pr-4 whitespace-nowrap">Segment</th>
+                <th className="text-right py-2 pr-4 whitespace-nowrap">Gross</th>
+                <th className="text-right py-2 pr-4 whitespace-nowrap">Govt fees</th>
+                <th className="text-right py-2 pr-4 whitespace-nowrap">Partner</th>
+                <th className="text-right py-2 pr-1 whitespace-nowrap">Company margin</th>
               </tr>
             </thead>
             <tbody>
@@ -813,7 +956,7 @@ function RoyaltyTab({ canApprove }: RoyaltyTabProps) {
             <Card label="Expected amount" value={money(summary.expected_amount)} tone="bg-yellow-50" />
           </div>
 
-          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-lg">
             <div className="px-4 py-3 border-b flex items-center justify-between">
               <h4 className="font-semibold text-gray-900 text-sm">
                 Ledger entries for {summary.period}
@@ -828,18 +971,24 @@ function RoyaltyTab({ canApprove }: RoyaltyTabProps) {
                 {canApprove && 'Click "Generate platform royalty" to create the 2% row.'}
               </p>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="text-left py-2 px-3">Category</th>
-                    <th className="text-left py-2 px-3">Beneficiary</th>
-                    <th className="text-left py-2 px-3">Amount</th>
-                    <th className="text-left py-2 px-3">Basis</th>
-                    <th className="text-left py-2 px-3">Status</th>
-                    <th className="text-left py-2 px-3">Approved</th>
-                    {canApprove && <th className="text-right py-2 px-3">Actions</th>}
-                  </tr>
-                </thead>
+              // Force horizontal scroll on narrow viewports so the rightmost
+              // Status / Approved / Actions columns don't get clipped under
+              // the phone screen edge. Parent's overflow-hidden was the
+              // culprit — switched to a horizontally-scrollable wrapper +
+              // table min-width that fits all 7 columns at natural size.
+              <div className="overflow-x-auto rounded-b-lg">
+                <table className="w-full text-sm min-w-[760px]">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Category</th>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Beneficiary</th>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Amount</th>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Basis</th>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Status</th>
+                      <th className="text-left py-2 px-3 whitespace-nowrap">Approved</th>
+                      {canApprove && <th className="text-right py-2 px-3 whitespace-nowrap">Actions</th>}
+                    </tr>
+                  </thead>
                 <tbody>
                   {summary.rows.map((r) => (
                     <tr key={r.id} className="border-b">
@@ -898,8 +1047,9 @@ function RoyaltyTab({ canApprove }: RoyaltyTabProps) {
                       )}
                     </tr>
                   ))}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </>

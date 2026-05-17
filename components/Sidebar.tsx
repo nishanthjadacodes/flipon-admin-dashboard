@@ -143,7 +143,7 @@ export default function Sidebar({
         </ul>
       </nav>
 
-      <div className="p-4 border-t border-white/10">
+      <div className="p-4 border-t border-white/10 space-y-3">
         <div className={`flex items-center ${isCollapsed && !isMobile ? 'justify-center' : 'space-x-3'}`}>
           <div
             style={{ backgroundColor: 'var(--brand-sun)', color: 'var(--brand-primary)' }}
@@ -159,6 +159,54 @@ export default function Sidebar({
             </div>
           )}
         </div>
+
+        {/* Logout — wipes client-side auth state and redirects to the
+            portal/landing page (the role-toggle page across the two
+            apps + two websites). Destination URL is configured via
+            NEXT_PUBLIC_LANDING_URL on Vercel:
+              Vercel → Project Settings → Environment Variables →
+              add NEXT_PUBLIC_LANDING_URL = https://your-portal-url
+              → Redeploy (env vars don't auto-trigger a build).
+            When the env var is missing we surface that to the admin
+            via an alert so the "logout does nothing" failure mode
+            (just reloads the dashboard) is no longer silent. */}
+        <button
+          onClick={() => {
+            const target = (process.env.NEXT_PUBLIC_LANDING_URL as string | undefined) || '';
+            if (!target) {
+              alert(
+                'Portal URL not configured.\n\n' +
+                  'Set NEXT_PUBLIC_LANDING_URL in Vercel → Project Settings → ' +
+                  'Environment Variables to your portal page (the toggle page ' +
+                  'between the 2 apps + 2 websites), then redeploy.',
+              );
+              return;
+            }
+            if (
+              typeof window !== 'undefined' &&
+              !window.confirm('Log out and return to the portal?')
+            ) {
+              return;
+            }
+            try {
+              if (typeof window !== 'undefined') {
+                window.localStorage?.clear();
+                window.sessionStorage?.clear();
+              }
+            } catch (_) { /* private mode etc. */ }
+            if (typeof window !== 'undefined') {
+              window.location.href = target;
+            }
+          }}
+          title={isCollapsed && !isMobile ? 'Logout' : undefined}
+          className={`w-full flex items-center ${
+            isCollapsed && !isMobile ? 'justify-center' : 'justify-center gap-2'
+          } px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-semibold transition-colors`}
+          aria-label="Logout"
+        >
+          <span className="text-base">⎋</span>
+          {!(isCollapsed && !isMobile) && <span>Logout</span>}
+        </button>
       </div>
     </aside>
   );

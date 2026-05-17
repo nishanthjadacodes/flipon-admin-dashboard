@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { servicesAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { useModalBackClose } from '@/utils/useModalBackClose';
+import { shortCode } from '@/utils/shortCode';
 
 // Shape: see flipon-backend Service model. user_cost is for fixed-price
 // consumer services; indicative_price_from/to describe quote-based industrial
@@ -1068,14 +1069,14 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
             anything. Centered modal removes that friction. */}
         {selected && (
           <div
-            className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+            className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-4 pt-20 sm:pt-4 overflow-y-auto"
             onClick={() => {
               setSelected(null);
               setEditing(false);
             }}
           >
             <div
-              className="bg-white rounded-lg shadow-xl w-full max-w-2xl my-8 max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4 max-h-[88vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="p-6">
@@ -1087,7 +1088,7 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                     {canEdit && !editing && (
                       <button
                         onClick={() => setEditing(true)}
-                        className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700"
+                        className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm"
                       >
                         Edit
                       </button>
@@ -1097,10 +1098,11 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                         setSelected(null);
                         setEditing(false);
                       }}
-                      className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500 text-xl leading-none"
+                      className="px-3 py-1.5 text-xs font-semibold bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 shadow-sm flex items-center gap-1.5"
                       aria-label="Close"
                     >
-                      ×
+                      <span className="text-sm leading-none">✕</span>
+                      <span>Close</span>
                     </button>
                   </div>
                 </div>
@@ -1119,8 +1121,10 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                       <p className="text-gray-600">{selected.name}</p>
                     </div>
                     <div>
-                      <p className="font-medium text-gray-900">ID</p>
-                      <p className="text-gray-600 font-mono text-xs break-all">{selected.id}</p>
+                      <p className="font-medium text-gray-900">Service ID</p>
+                      <p className="text-gray-900 font-mono text-sm font-semibold">
+                        {shortCode('FLIPSER', selected.id, 3)}
+                      </p>
                     </div>
                     <div>
                       <p className="font-medium text-gray-900">Category</p>
@@ -1129,7 +1133,18 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <p className="font-medium text-gray-900">Type</p>
-                        <p className="text-gray-600 capitalize">{selected.service_type || 'consumer'}</p>
+                        {/* "both" used to fall through to capitalize "Both"
+                            which confused operators — every service is
+                            really either consumer-facing (Common) or
+                            business-facing (Industrial). Map "both" →
+                            "Common" so it never reads as ambiguous. */}
+                        <p className="text-gray-600">
+                          {(() => {
+                            const t = String(selected.service_type || 'consumer').toLowerCase();
+                            if (t === 'industrial' || t === 'b2b') return 'Industrial';
+                            return 'Common';
+                          })()}
+                        </p>
                       </div>
                       <div>
                         <p className="font-medium text-gray-900">Pricing model</p>
@@ -1157,17 +1172,53 @@ export default function ServiceManagement({ userRole = 'super_admin' }: ServiceM
                         <p className="text-gray-600 whitespace-pre-wrap">{selected.description}</p>
                       </div>
                     )}
+                    {/* Documents required at booking time — shown
+                        prominently so the operator knows exactly what
+                        the customer has to upload before a rep can be
+                        dispatched. Each row spells out the doc name,
+                        not just the machine type id. */}
                     {Array.isArray(selected.required_documents) &&
                       selected.required_documents.length > 0 && (
-                        <div>
-                          <p className="font-medium text-gray-900">Required documents</p>
-                          <ul className="mt-1 space-y-1">
-                            {selected.required_documents.map((d, i) => (
-                              <li key={i} className="text-xs text-gray-600">
-                                · {typeof d === 'string' ? d : d.label || d.type}
-                                {typeof d === 'object' && d.required ? ' (required)' : ''}
-                              </li>
-                            ))}
+                        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                          <p className="font-medium text-gray-900 mb-2">
+                            Documents required at booking
+                          </p>
+                          <ul className="space-y-1.5">
+                            {selected.required_documents.map((d, i) => {
+                              const rawLabel =
+                                typeof d === 'string' ? d : d.label || d.type || `Document ${i + 1}`;
+                              // Match the customer-app rewrite: bare
+                              // "Email ID" / "Mobile Number" labels read
+                              // like the user must upload the value
+                              // itself, so they're shown as " Proof".
+                              const label = /^email\s*id$/i.test(rawLabel)
+                                ? 'Email ID Proof'
+                                : /^mobile\s*(no\.?|number)?$/i.test(rawLabel)
+                                  ? 'Mobile Number Proof'
+                                  : rawLabel;
+                              const isOptional =
+                                typeof d === 'object' && d.required === false;
+                              return (
+                                <li
+                                  key={i}
+                                  className="text-sm text-gray-800 flex items-start gap-2"
+                                >
+                                  <span className="text-blue-600 font-bold">
+                                    {i + 1}.
+                                  </span>
+                                  <span>
+                                    {label}
+                                    {isOptional ? (
+                                      <span className="text-xs text-gray-500 ml-1">
+                                        (optional)
+                                      </span>
+                                    ) : (
+                                      <span className="text-xs text-red-600 ml-1">*</span>
+                                    )}
+                                  </span>
+                                </li>
+                              );
+                            })}
                           </ul>
                         </div>
                       )}

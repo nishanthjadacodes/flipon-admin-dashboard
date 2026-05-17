@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { b2bAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
+import { shortCode } from '@/utils/shortCode';
 
 // Mirrors the PDF's "Application → Inspection → NOC Issued" milestone flow.
 type StageKey =
@@ -684,7 +685,9 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
                   {selected.kind === 'enquiry' ? 'Enquiry' : 'Booking'}
                 </span>
               </div>
-              <p className="text-xs text-gray-500 font-mono">{selected.id}</p>
+              <p className="text-sm font-mono font-semibold text-gray-900">
+                {shortCode('FLIPIND', selected.id, 3)}
+              </p>
               <p className="text-xs text-gray-500 mt-1">
                 Customer: {selected.customer?.name || '—'}
                 {selected.customer?.email ? ` · ${selected.customer.email}` : ''}
@@ -701,9 +704,11 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
             </div>
             <button
               onClick={() => setSelected(null)}
-              className="text-gray-500 hover:text-gray-700 text-sm"
+              className="px-3 py-1.5 text-xs font-semibold bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 shadow-sm flex items-center gap-1.5"
+              aria-label="Close"
             >
-              ✕ close
+              <span className="text-sm leading-none">✕</span>
+              <span>Close</span>
             </button>
           </div>
 

@@ -594,14 +594,11 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                     <p className="text-gray-900 font-mono text-sm font-semibold">
                       {repCode(selected as any)}
                     </p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">
-                      Internal ref: {shortId(selected.id)}
-                    </p>
                   </div>
                   <div>
                     <p className="font-medium text-gray-900">Contact</p>
                     <p className="text-gray-600">{selected.mobile || '—'}</p>
-                    <p className="text-gray-600">{selected.email || 'no email on file'}</p>
+                    <p className="text-gray-600">{selected.email || '—'}</p>
                   </div>
                   <div>
                     <p className="font-medium text-gray-900">Joined</p>

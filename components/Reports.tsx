@@ -19,7 +19,7 @@ const TABS: TabSpec[] = [
   { id: 'agents', label: 'Representative Performance', hint: 'Rating, jobs completed, online representatives', cap: CAP.REPORT_AGENTS },
   { id: 'revenue', label: 'Revenue B2C vs B2B', hint: 'Consumer vs industrial split', cap: CAP.REPORT_REVENUE },
   { id: 'service_demand', label: 'Service Demand', hint: 'High-demand services & zones', cap: CAP.REPORT_SERVICE_DEMAND },
-  { id: 'pending_docs', label: 'Pending Documentation', hint: 'Applications stalled on missing docs', cap: CAP.REPORT_PENDING_DOCS },
+  { id: 'pending_docs', label: 'Pending Documentation', hint: '', cap: CAP.REPORT_PENDING_DOCS },
 ];
 
 interface WindowOption {
@@ -401,6 +401,22 @@ function RevenueReport({ days, b2bOnly }: { days: number; b2bOnly: boolean }) {
           value={bookingsTotal ? money(Math.round(total / bookingsTotal)) : '—'}
         />
       </div>
+
+      {/* Empty-state notice — fired when either B2C or B2B genuinely
+          has zero paid bookings in the selected window, so the ₹0 card
+          reads as expected rather than as a missing-data bug. */}
+      {bookingsTotal === 0 ? (
+        <div className="p-3 rounded bg-gray-50 border border-gray-200 text-gray-700 text-xs">
+          No paid bookings in the last {days} days. Numbers will populate once
+          customers complete payment on a booking.
+        </div>
+      ) : b2b.count === 0 ? (
+        <div className="p-3 rounded bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+          No paid B2B bookings in this window — all {b2c.count} bookings were
+          B2C. B2B numbers will populate once an industrial enquiry converts
+          to a paid booking.
+        </div>
+      ) : null}
 
       <div className="bg-white border border-gray-200 rounded-lg p-4">
         <h4 className="font-semibold text-gray-900 mb-3">B2C vs B2B split</h4>

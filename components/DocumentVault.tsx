@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { b2bAPI, vaultAPI } from '@/utils/api';
 import { CAP, can } from '@/utils/rbac';
 import { useModalBackClose } from '@/utils/useModalBackClose';
+import { shortCode } from '@/utils/shortCode';
 
 // Corporate document vault — B2B/Industrial Admin scope per PDF.
 // Documents are encrypted at rest server-side; download link is auth-checked.
@@ -21,8 +22,6 @@ const fmtDate = (iso?: string | null): string => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 };
-const shortId = (id: unknown): string =>
-  typeof id === 'string' ? id.slice(0, 8) : String(id ?? '');
 const bytesLabel = (n: unknown): string => {
   const v = Number(n);
   if (!Number.isFinite(v) || v <= 0) return '—';
@@ -343,7 +342,9 @@ export default function DocumentVault({ userRole = 'b2b_admin' }: DocumentVaultP
                       {e.companyProfile?.gstin ? ` · ${e.companyProfile.gstin}` : ''}
                     </p>
                     <div className="flex items-center justify-between mt-1">
-                      <span className="text-[10px] text-gray-500 font-mono">{shortId(e.id)}</span>
+                      <span className="text-[10px] text-gray-700 font-mono font-semibold">
+                        {shortCode('FLIPDOC', e.id, 3)}
+                      </span>
                       <span className="text-[10px] text-gray-600 capitalize">
                         {(e.status || '').replace(/_/g, ' ')}
                       </span>
@@ -368,7 +369,9 @@ export default function DocumentVault({ userRole = 'b2b_admin' }: DocumentVaultP
                     <h3 className="text-lg font-semibold text-gray-900">
                       {selectedEnquiry.service?.name || 'Industrial service'}
                     </h3>
-                    <p className="text-xs text-gray-500 font-mono">{selectedEnquiry.id}</p>
+                    <p className="text-sm font-mono font-semibold text-gray-900">
+                      {shortCode('FLIPUP', selectedEnquiry.id, 3)}
+                    </p>
                     <p className="text-xs text-gray-500 mt-1">
                       {(selectedEnquiry.companyProfile?.legal_entity_name ||
                         selectedEnquiry.companyProfile?.brand_name) ||
