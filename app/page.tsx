@@ -27,7 +27,8 @@ type SectionId =
   | 'accounts'
   | 'helpdesk'
   | 'reports'
-  | 'admin';
+  | 'admin'
+  | 'flash-notifications';
 
 const SECTION_TO_CAP: Record<SectionId, Capability> = {
   dashboard: CAP.SECTION_DASHBOARD,
@@ -40,6 +41,7 @@ const SECTION_TO_CAP: Record<SectionId, Capability> = {
   helpdesk: CAP.SECTION_HELPDESK,
   reports: CAP.SECTION_REPORTS,
   admin: CAP.SECTION_ADMIN,
+  'flash-notifications': CAP.SECTION_ADMIN,
 };
 
 interface RoleOption {
