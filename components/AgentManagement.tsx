@@ -51,20 +51,31 @@ const shortId = (id: unknown): string =>
 
 // Short employee-style code shown in admin's rep details. MUST match
 // what the rep app shows in its home hero + profile screen — see
-// customerandroidapp/src/utils/agent/repCode.ts. Same derivation
-// (first 4 hex chars of UUID, uppercased, with REP- prefix) so the
-// rep can quote their code over the phone and admin recognises it
-// immediately. Falls back to the explicit agent_code if the backend
-// ever starts assigning one.
+// customerandroidapp/src/utils/agent/repCode.ts. Same FNV-1a hash
+// mapped into [10000, 99999] so the digit block is always exactly
+// 5 chars. Format: "FLIPRT" + 5 digits, e.g. "FLIPRT11542".
+//
+// CRITICAL: if you change the formula here, change it in the rep
+// app too — the whole point is that admin and the rep see the
+// identical code so a rep quoting "FLIPRT11542" over the phone is
+// findable in admin instantly.
+const hashToFiveDigits = (input: string): string => {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const n = (Math.abs(h | 0) % 90000) + 10000;
+  return String(n);
+};
+
 const repCode = (agent: { id?: unknown; agent_code?: string | null }): string => {
   if (agent.agent_code && String(agent.agent_code).trim()) {
     return String(agent.agent_code).trim();
   }
-  const slug = String(agent.id || '')
-    .replace(/-/g, '')
-    .slice(0, 4)
-    .toUpperCase();
-  return slug ? `REP-${slug}` : 'REP-—';
+  const seed = String(agent.id || '');
+  if (!seed) return 'FLIPRT00000';
+  return `FLIPRT${hashToFiveDigits(seed)}`;
 };
 
 function dutyState(agent: AgentRecord): DutyState {
