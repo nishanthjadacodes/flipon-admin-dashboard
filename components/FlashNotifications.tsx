@@ -58,6 +58,40 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
   // <img> fired onLoad, 'err' on onError. Keyed by the URL string
   // so changing the input resets the state automatically.
   const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle');
+  const [uploadingImage, setUploadingImage] = useState<boolean>(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const handleImageUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ): Promise<void> => {
+    const file = e.target.files?.[0];
+    // Reset the input value so picking the SAME file again still
+    // fires onChange (browsers cache the last selection by default).
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Please pick an image file (PNG, JPG, WEBP, GIF).');
+      return;
+    }
+    // Soft cap at 5 MB — Cloudinary free tier handles larger but
+    // anything > a few MB makes the customer-app splash carousel
+    // slow on cellular networks.
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError('Image is over 5 MB. Pick a smaller file.');
+      return;
+    }
+    setUploadError(null);
+    setUploadingImage(true);
+    try {
+      const { url } = await flashNotificationsAPI.uploadImage(file, file.name);
+      setEditing((prev) => (prev ? { ...prev, image_url: url } : prev));
+      setPreviewStatus('loading');
+    } catch (err: any) {
+      setUploadError(err?.message || 'Upload failed');
+    } finally {
+      setUploadingImage(false);
+    }
+  };
 
   const canManage = userRole === 'super_admin';
 
@@ -345,15 +379,59 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                 />
               </Field>
-              <Field label="Image URL (Cloudinary / CDN / any direct image link)">
+              <Field label="Image">
+                {/* Pick-from-device button — opens the OS file picker
+                    so admin can upload an image straight from their
+                    phone (Camera Roll / Gallery / Files) instead of
+                    having to find a hotlink-friendly online URL.
+                    Backend stores it in Cloudinary (or local disk
+                    fallback) and fills image_url with the public URL. */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span
+                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold ${
+                      uploadingImage
+                        ? 'bg-gray-100 text-gray-500'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    {uploadingImage ? '⏳ Uploading…' : '📁 Choose image file'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    disabled={uploadingImage}
+                    className="hidden"
+                  />
+                  {editing.image_url && !uploadingImage && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditing((prev) => (prev ? { ...prev, image_url: '' } : prev));
+                        setPreviewStatus('idle');
+                        setUploadError(null);
+                      }}
+                      className="text-xs text-red-700 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </label>
+                {uploadError && (
+                  <p className="mt-1 text-xs text-red-700">⚠ {uploadError}</p>
+                )}
+                <p className="mt-1 text-[11px] text-gray-500">
+                  PNG / JPG / WEBP / GIF up to 5 MB. Or paste a direct URL
+                  below.
+                </p>
                 <input
                   value={editing.image_url || ''}
                   onChange={(e) => {
                     setEditing({ ...editing, image_url: e.target.value });
                     setPreviewStatus(e.target.value.trim() ? 'loading' : 'idle');
                   }}
-                  placeholder="https://res.cloudinary.com/…/diwali-banner.jpg"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  placeholder="…or paste an image URL (https://…)"
+                  className="mt-2 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                 />
                 {editing.image_url && editing.image_url.trim() && (
                   <a

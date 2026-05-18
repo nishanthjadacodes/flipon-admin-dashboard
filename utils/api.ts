@@ -160,6 +160,27 @@ export const flashNotificationsAPI = {
   // "Show only this one" button when uploading a new festive offer.
   showcase: (id: string): Promise<unknown> =>
     apiRequest(`/flash-notifications/${id}/showcase`, { method: 'PUT' }),
+  // Multipart image upload — admin picks a file from their device
+  // (Choose file button in the modal), we POST it as form-data, and
+  // the backend returns the public URL. apiRequest can't be used
+  // here because it auto-stringifies JSON and sets the wrong
+  // Content-Type for multipart; this uses fetch directly.
+  uploadImage: async (file: File | Blob, filename?: string): Promise<{ url: string }> => {
+    const fd = new FormData();
+    fd.append('file', file, filename);
+    const base =
+      (process.env.NEXT_PUBLIC_API_URL as string | undefined) ||
+      'https://flipon-backend.onrender.com/api';
+    const resp = await fetch(`${base}/flash-notifications/upload-image`, {
+      method: 'POST',
+      body: fd,
+    });
+    const json = await resp.json();
+    if (!resp.ok || !json?.success) {
+      throw new Error(json?.message || `Upload failed (HTTP ${resp.status})`);
+    }
+    return { url: json.url };
+  },
 };
 
 // ─── Dashboard ────────────────────────────────────────────────────────────
