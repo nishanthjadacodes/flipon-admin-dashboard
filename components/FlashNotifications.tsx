@@ -138,6 +138,26 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
     }
   };
 
+  // Marks THIS notification as the only active one — server
+  // deactivates every other row in the same call. Useful when admin
+  // uploads a new festive offer and wants the previous one out of
+  // the customer-app carousel without manually toggling each off.
+  const handleShowcase = async (row: FlashNotification): Promise<void> => {
+    if (
+      !window.confirm(
+        `Make "${row.title}" the ONLY active notification?\n\nAll other active notifications will be turned off so customers see just this one.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await flashNotificationsAPI.showcase(row.id);
+      await load();
+    } catch (e: any) {
+      alert(e?.message || 'Showcase failed');
+    }
+  };
+
   const handleDelete = async (row: FlashNotification): Promise<void> => {
     if (!window.confirm(`Delete "${row.title}"? This can't be undone.`)) return;
     try {
@@ -225,7 +245,7 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                     </p>
                   )}
                 </div>
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     onClick={() =>
                       setEditing({
@@ -243,6 +263,14 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                     className="text-xs px-3 py-1 rounded bg-gray-100 hover:bg-gray-200 font-medium text-gray-700"
                   >
                     {row.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                  {/* Showcase — turns every other notification off in
+                      one click so customers see only this one. */}
+                  <button
+                    onClick={() => handleShowcase(row)}
+                    className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+                  >
+                    ⭐ Show only this
                   </button>
                   <button
                     onClick={() => handleDelete(row)}

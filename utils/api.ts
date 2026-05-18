@@ -155,6 +155,11 @@ export const flashNotificationsAPI = {
     }),
   remove: (id: string): Promise<unknown> =>
     apiRequest(`/flash-notifications/${id}`, { method: 'DELETE' }),
+  // Mark THIS notification as the only active one (deactivates all
+  // other rows server-side in a single call). Used by the admin's
+  // "Show only this one" button when uploading a new festive offer.
+  showcase: (id: string): Promise<unknown> =>
+    apiRequest(`/flash-notifications/${id}/showcase`, { method: 'PUT' }),
 };
 
 // ─── Dashboard ────────────────────────────────────────────────────────────
