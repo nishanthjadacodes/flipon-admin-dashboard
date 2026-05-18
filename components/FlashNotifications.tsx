@@ -79,6 +79,18 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
     load();
   }, []);
 
+  // Reset preview status whenever the modal opens for a different
+  // notification (new vs edit, or switching between rows). Without
+  // this, a previous "✓ Loads" pill stuck around and made it look
+  // like the new URL was working when it actually wasn't.
+  useEffect(() => {
+    if (!editing) {
+      setPreviewStatus('idle');
+      return;
+    }
+    setPreviewStatus(editing.image_url && editing.image_url.trim() ? 'loading' : 'idle');
+  }, [editing?.id, editing?.image_url]);
+
   const counts = useMemo(() => {
     const active = rows.filter((r) => r.is_active).length;
     return { total: rows.length, active };
@@ -343,6 +355,16 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                   placeholder="https://res.cloudinary.com/…/diwali-banner.jpg"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                 />
+                {editing.image_url && editing.image_url.trim() && (
+                  <a
+                    href={editing.image_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                  >
+                    ↗ Open this URL in a new tab to verify it&apos;s a real image
+                  </a>
+                )}
               </Field>
 
               {/* Live preview of the image URL — gives admin instant
@@ -387,17 +409,56 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                     />
                   </div>
                   {previewStatus === 'err' && (
-                    <p className="mt-2 text-xs text-red-700">
-                      This URL didn&apos;t load. Common causes: it&apos;s a
-                      Google search results page (not a direct image), the
-                      host blocks external requests, or the URL uses
-                      <code className="font-mono"> http://</code> instead of
-                      <code className="font-mono"> https://</code>. Right-click
-                      the image and pick <strong>&quot;Copy image
-                      address&quot;</strong> (Chrome) or
-                      <strong> &quot;Copy image link&quot;</strong> (Firefox)
-                      to get a direct URL.
-                    </p>
+                    <div className="mt-2 text-xs text-red-700 space-y-2">
+                      <p className="font-semibold">
+                        ✗ The browser couldn&apos;t load this URL. Common causes:
+                      </p>
+                      <ul className="list-disc pl-5 space-y-1">
+                        <li>
+                          The URL is a Google <em>search results page</em>
+                          (starts with{' '}
+                          <code className="font-mono">www.google.com/imgres</code>
+                          {' '}or{' '}
+                          <code className="font-mono">www.google.com/url</code>)
+                          — that&apos;s not the image, it&apos;s the result link.
+                        </li>
+                        <li>
+                          The host is blocking <em>hotlinking</em> — many sites
+                          return 403 when their images are embedded elsewhere.
+                          Common offenders: Pinterest, Instagram, Facebook,
+                          most stock-photo sites.
+                        </li>
+                        <li>
+                          URL uses
+                          <code className="font-mono"> http://</code>
+                          {' '}instead of
+                          <code className="font-mono"> https://</code> —
+                          Vercel blocks mixed content.
+                        </li>
+                      </ul>
+                      <p className="pt-1">
+                        <strong>Easy fix:</strong> upload the image to{' '}
+                        <a
+                          href="https://imgbb.com/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 underline"
+                        >
+                          imgbb.com
+                        </a>{' '}
+                        or{' '}
+                        <a
+                          href="https://postimages.org/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 underline"
+                        >
+                          postimages.org
+                        </a>
+                        {' '}(no signup needed), then paste the direct image
+                        URL they give you.
+                      </p>
+                    </div>
                   )}
                 </div>
               )}
