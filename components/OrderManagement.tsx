@@ -1211,7 +1211,19 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
                   {selected.notes && (
                     <div>
                       <p className="font-medium text-gray-900">Notes</p>
-                      <p className="text-gray-600">{selected.notes}</p>
+                      {/* Strip the raw enquiry UUID the backend stamps
+                          on B2B-converted bookings ("Converted from
+                          B2B enquiry:c0ad795f-…"). The UUID is needed
+                          server-side for the conversion-lookup query
+                          but reads as noise in the admin UI — we
+                          collapse it to "Converted from B2B enquiry"
+                          on display. */}
+                      <p className="text-gray-600 whitespace-pre-wrap">
+                        {selected.notes.replace(
+                          /Converted from B2B enquiry:[0-9a-f-]+/gi,
+                          'Converted from B2B enquiry',
+                        )}
+                      </p>
                     </div>
                   )}
                 </div>

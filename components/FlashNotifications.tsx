@@ -387,8 +387,16 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                   contains the keyword (case-insensitive). Leave blank for an
                   announcement-only banner.
                 </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Discount %">
+                {/* Force equal column widths + flex column so both
+                    Fields' input rows line up even when one label
+                    wraps onto two lines. Labels use the same height
+                    via flex-shrink-0 + min-h so the inputs sit on
+                    the same baseline. */}
+                <div className="grid grid-cols-2 gap-3 items-start">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide min-h-[16px]">
+                      Discount %
+                    </span>
                     <input
                       type="number"
                       min={0}
@@ -407,19 +415,22 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                         })
                       }
                       placeholder="e.g. 50"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
                     />
-                  </Field>
-                  <Field label="Target service keyword">
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide min-h-[16px]">
+                      Target keyword
+                    </span>
                     <input
                       value={editing.target_service_pattern || ''}
                       onChange={(e) =>
                         setEditing({ ...editing, target_service_pattern: e.target.value })
                       }
                       placeholder="aadhaar / pan / gst / voter…"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
                     />
-                  </Field>
+                  </div>
                 </div>
               </div>
               <label className="flex items-center gap-2 text-sm text-gray-700">

@@ -642,7 +642,9 @@ export default function B2BPipeline({ userRole = 'b2b_admin' }: B2BPipelineProps
                             {b.customer?.name || '—'}
                             {b.company?.legal_entity_name ? ` · ${b.company.legal_entity_name}` : ''}
                           </p>
-                          <p className="text-[10px] text-gray-400 truncate">{shortId(b.id)}</p>
+                          <p className="text-[10px] text-gray-700 font-mono font-semibold truncate">
+                            {shortCode('FLIPIND', b.id, 3)}
+                          </p>
                           <div className="flex items-center justify-between mt-1">
                             <p className="text-xs text-gray-500">
                               {money(b.price_quoted || b.final_price)} · {fmtDate(b.created_at)}

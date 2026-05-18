@@ -53,10 +53,48 @@ export default function Sidebar({
   onCloseMobileMenu,
 }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState<boolean>(false);
 
   const filteredMenuItems = menuItems.filter((item) => can(userRole, item.cap));
   const meta = roleMeta(userRole);
   const initials = ROLE_INITIALS[userRole] || 'AD';
+
+  // Single logout handler — wipes client state and forwards the
+  // user back to the portal page (the toggle screen with the 2
+  // apps + 2 websites). Always uses NEXT_PUBLIC_LANDING_URL when
+  // set; otherwise falls back to '/' so at least the auth state
+  // is cleared. The previous flow used window.confirm which
+  // prefixed every prompt with the page URL — replaced by a
+  // proper React modal below for a cleaner UX.
+  const performLogout = (): void => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage?.clear();
+        window.sessionStorage?.clear();
+      }
+    } catch (_) { /* private mode etc. */ }
+
+    // WebView path — the customer app injects ReactNativeWebView
+    // with postMessage so the native side can navigate back to
+    // ModeSelectScreen (the toggle page). Works from nested
+    // sections too because postMessage doesn't care about the
+    // current URL.
+    const rnBridge =
+      typeof window !== 'undefined' ? (window as any).ReactNativeWebView : null;
+    if (rnBridge?.postMessage) {
+      rnBridge.postMessage('LOGOUT');
+      return;
+    }
+
+    // Browser path — env var if set, otherwise '/'. Use
+    // window.location.assign for an absolute navigation so
+    // nested-section hash routes don't interfere.
+    const target =
+      (process.env.NEXT_PUBLIC_LANDING_URL as string | undefined) || '/';
+    if (typeof window !== 'undefined') {
+      window.location.assign(target);
+    }
+  };
 
   return (
     <aside
@@ -161,52 +199,15 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* Logout — two behaviours, picked at runtime:
-            1. RUNNING INSIDE THE CUSTOMER APP's WEBVIEW (the usual path
-               for admin users — they open ModeSelectScreen, tap the
-               "Admin Dashboard" tile, which loads us in a WebView).
-               We post 'LOGOUT' on window.ReactNativeWebView so the
-               native WebViewScreen calls navigation.goBack(), returning
-               the user to ModeSelectScreen — the "toggle page" with
-               the 2 apps + 2 websites.
-            2. RUNNING IN A REGULAR BROWSER (no WebView bridge present).
-               Fall back to a URL redirect: NEXT_PUBLIC_LANDING_URL if
-               set, else just reload the admin URL with cleared storage.
-            Either way we wipe localStorage + sessionStorage first so
-            no stale auth state survives the log-out. */}
+        {/* Logout — opens a custom React modal (NOT window.confirm,
+            which prefixes every prompt with "The page at https://…
+            says"). Modal calls performLogout() on OK; performLogout
+            forwards via WebView postMessage when embedded in the
+            customer app, else does an absolute window.location.assign
+            to NEXT_PUBLIC_LANDING_URL or '/'. Works from nested
+            section URLs because we don't rely on the current hash. */}
         <button
-          onClick={() => {
-            if (
-              typeof window !== 'undefined' &&
-              !window.confirm('Do you want to logout?')
-            ) {
-              return;
-            }
-            try {
-              if (typeof window !== 'undefined') {
-                window.localStorage?.clear();
-                window.sessionStorage?.clear();
-              }
-            } catch (_) { /* private mode etc. */ }
-
-            // WebView path — the customer app injects
-            // window.ReactNativeWebView with a postMessage method.
-            const rnBridge =
-              typeof window !== 'undefined'
-                ? (window as any).ReactNativeWebView
-                : null;
-            if (rnBridge?.postMessage) {
-              rnBridge.postMessage('LOGOUT');
-              return;
-            }
-
-            // Browser path — env-var or fallback to /.
-            const target =
-              (process.env.NEXT_PUBLIC_LANDING_URL as string | undefined) || '/';
-            if (typeof window !== 'undefined') {
-              window.location.href = target;
-            }
-          }}
+          onClick={() => setShowLogoutConfirm(true)}
           title={isCollapsed && !isMobile ? 'Logout' : undefined}
           className={`w-full flex items-center ${
             isCollapsed && !isMobile ? 'justify-center' : 'justify-center gap-2'
@@ -217,6 +218,48 @@ export default function Sidebar({
           {!(isCollapsed && !isMobile) && <span>Logout</span>}
         </button>
       </div>
+
+      {/* Logout confirmation — custom modal so we never get the
+          browser-prefixed "The page at https://… says" header that
+          window.confirm renders by default. z-index 60 keeps it
+          above the section content (the sidebar itself is z-40). */}
+      {showLogoutConfirm && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setShowLogoutConfirm(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center"
+          >
+            <div className="text-3xl mb-2">⎋</div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Do you want to logout?
+            </h3>
+            <p className="text-sm text-gray-500 mb-5">
+              You&apos;ll be returned to the portal page.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowLogoutConfirm(false)}
+                className="flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowLogoutConfirm(false);
+                  performLogout();
+                }}
+                className="flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700"
+                autoFocus
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
