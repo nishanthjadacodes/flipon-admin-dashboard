@@ -53,6 +53,11 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Partial<FlashNotification> | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
+  // Per-URL load state for the live preview thumbnail inside the
+  // edit modal. 'loading' while fetch is in flight, 'ok' when the
+  // <img> fired onLoad, 'err' on onError. Keyed by the URL string
+  // so changing the input resets the state automatically.
+  const [previewStatus, setPreviewStatus] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle');
 
   const canManage = userRole === 'super_admin';
 
@@ -328,14 +333,75 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                 />
               </Field>
-              <Field label="Image URL (Cloudinary / CDN)">
+              <Field label="Image URL (Cloudinary / CDN / any direct image link)">
                 <input
                   value={editing.image_url || ''}
-                  onChange={(e) => setEditing({ ...editing, image_url: e.target.value })}
+                  onChange={(e) => {
+                    setEditing({ ...editing, image_url: e.target.value });
+                    setPreviewStatus(e.target.value.trim() ? 'loading' : 'idle');
+                  }}
                   placeholder="https://res.cloudinary.com/…/diwali-banner.jpg"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                 />
               </Field>
+
+              {/* Live preview of the image URL — gives admin instant
+                  feedback on whether the URL actually loads in a
+                  browser-compatible way. Without this, broken URLs
+                  (Google search result redirects, hotlink-protected
+                  CDNs, http:// without TLS, etc.) only show as a
+                  blank box in the customer app AFTER deploy. The
+                  onLoad / onError handlers flip the status badge so
+                  admin sees ❌ Couldn't load before pressing Save. */}
+              {editing.image_url && editing.image_url.trim() && (
+                <div className="rounded-lg border border-gray-200 p-3 bg-gray-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                      Preview
+                    </p>
+                    {previewStatus === 'ok' && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-semibold">
+                        ✓ Loads
+                      </span>
+                    )}
+                    {previewStatus === 'err' && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold">
+                        ✗ Couldn&apos;t load
+                      </span>
+                    )}
+                    {previewStatus === 'loading' && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold">
+                        ⏳ Loading…
+                      </span>
+                    )}
+                  </div>
+                  <div className="w-full aspect-video bg-white rounded border border-gray-200 overflow-hidden flex items-center justify-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      key={editing.image_url}
+                      src={editing.image_url}
+                      alt="Preview"
+                      className="max-w-full max-h-full object-contain"
+                      onLoad={() => setPreviewStatus('ok')}
+                      onError={() => setPreviewStatus('err')}
+                    />
+                  </div>
+                  {previewStatus === 'err' && (
+                    <p className="mt-2 text-xs text-red-700">
+                      This URL didn&apos;t load. Common causes: it&apos;s a
+                      Google search results page (not a direct image), the
+                      host blocks external requests, or the URL uses
+                      <code className="font-mono"> http://</code> instead of
+                      <code className="font-mono"> https://</code>. Right-click
+                      the image and pick <strong>&quot;Copy image
+                      address&quot;</strong> (Chrome) or
+                      <strong> &quot;Copy image link&quot;</strong> (Firefox)
+                      to get a direct URL.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <Field label="CTA label (optional)">
                   <input
