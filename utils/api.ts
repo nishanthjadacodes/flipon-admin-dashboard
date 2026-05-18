@@ -132,6 +132,12 @@ export interface FlashNotification {
   is_active: boolean;
   active_from?: string | null;
   active_until?: string | null;
+  // Optional discount the customer app applies in Payment Summary
+  // for any service whose name OR category contains
+  // target_service_pattern (case-insensitive). Both fields must be
+  // present + non-empty for the discount to take effect.
+  discount_percent?: number | null;
+  target_service_pattern?: string | null;
   created_at?: string;
   updated_at?: string;
 }

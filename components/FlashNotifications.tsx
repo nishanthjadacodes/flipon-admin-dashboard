@@ -27,6 +27,8 @@ const emptyForm = (): Partial<FlashNotification> => ({
   is_active: true,
   active_from: '',
   active_until: '',
+  discount_percent: null,
+  target_service_pattern: '',
 });
 
 const fmtDate = (iso?: string | null): string => {
@@ -96,12 +98,22 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
     try {
       // Convert datetime-local strings to ISO; empty → null so the
       // backend stores NULL instead of an invalid date.
+      const discPctRaw = editing.discount_percent;
+      const discPct =
+        discPctRaw == null || discPctRaw === ('' as any)
+          ? null
+          : Math.max(0, Math.min(100, Number(discPctRaw)));
       const payload: Partial<FlashNotification> = {
         ...editing,
         title: String(editing.title).trim(),
         priority: Number(editing.priority || 0),
         active_from: editing.active_from ? new Date(editing.active_from).toISOString() : null,
         active_until: editing.active_until ? new Date(editing.active_until).toISOString() : null,
+        discount_percent: Number.isFinite(discPct as number) && (discPct as number) > 0 ? discPct : null,
+        target_service_pattern:
+          editing.target_service_pattern && String(editing.target_service_pattern).trim()
+            ? String(editing.target_service_pattern).trim()
+            : null,
       };
       if (editing.id) {
         await flashNotificationsAPI.update(editing.id, payload);
@@ -204,6 +216,14 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                     Priority: <span className="font-medium">{row.priority}</span>
                   </p>
                   <p>From: {fmtDate(row.active_from)} · Until: {fmtDate(row.active_until)}</p>
+                  {row.discount_percent != null && row.discount_percent > 0 && (
+                    <p className="text-emerald-700 font-semibold">
+                      💸 {row.discount_percent}% off
+                      {row.target_service_pattern
+                        ? ` · matches "${row.target_service_pattern}"`
+                        : ' · no service filter (won\'t apply)'}
+                    </p>
+                  )}
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button
@@ -351,6 +371,56 @@ export default function FlashNotifications({ userRole }: FlashNotificationsProps
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                   />
                 </Field>
+              </div>
+
+              {/* Discount fields — when both filled, customer app
+                  applies the % off in Payment Summary for any service
+                  matching the target pattern. Leave both blank for a
+                  display-only banner with no pricing effect. */}
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-3">
+                <p className="text-xs font-semibold text-emerald-800 uppercase tracking-wide">
+                  💸 Discount (optional)
+                </p>
+                <p className="text-[11px] text-emerald-900/80">
+                  When both filled, customers see this discount applied in their
+                  Payment Summary for any service whose name OR category
+                  contains the keyword (case-insensitive). Leave blank for an
+                  announcement-only banner.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Discount %">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={
+                        editing.discount_percent == null
+                          ? ''
+                          : String(editing.discount_percent)
+                      }
+                      onChange={(e) =>
+                        setEditing({
+                          ...editing,
+                          discount_percent:
+                            e.target.value === '' ? null : Number(e.target.value),
+                        })
+                      }
+                      placeholder="e.g. 50"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    />
+                  </Field>
+                  <Field label="Target service keyword">
+                    <input
+                      value={editing.target_service_pattern || ''}
+                      onChange={(e) =>
+                        setEditing({ ...editing, target_service_pattern: e.target.value })
+                      }
+                      placeholder="aadhaar / pan / gst / voter…"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                    />
+                  </Field>
+                </div>
               </div>
               <label className="flex items-center gap-2 text-sm text-gray-700">
                 <input
