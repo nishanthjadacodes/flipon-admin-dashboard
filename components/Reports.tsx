@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { reportsAPI } from '@/utils/api';
 import { CAP, can, type Capability } from '@/utils/rbac';
+import { saveTextFile } from '@/utils/csv';
 
 // Maps 1:1 to the backend endpoints in flipon-backend/src/controllers/reportsController.js.
 type TabId = 'operational' | 'agents' | 'revenue' | 'service_demand' | 'pending_docs';
@@ -85,17 +86,11 @@ function DownloadCsvButton<T extends Record<string, unknown>>({
     keys.join(','),
     ...rows.map((r) => keys.map((k) => escape((r as Record<string, unknown>)[k])).join(',')),
   ].join('\n');
-  const download = (): void => {
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+  // saveTextFile handles both the browser (Blob download) and the
+  // customer-app WebView (postMessage → native share sheet) — the
+  // raw Blob trick used here before silently failed inside the
+  // WebView, which is why Export CSV looked dead in the mobile app.
+  const download = (): void => saveTextFile(filename, csv, 'text/csv;charset=utf-8');
   return (
     <button
       onClick={download}
@@ -261,8 +256,11 @@ function AgentPerformanceReport({ limit = 50 }: { limit?: number }) {
         <Card label="Total jobs completed" value={totalJobs} tone="bg-blue-50" />
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
+      {/* overflow-x-auto (not overflow-hidden) so the table can scroll
+          sideways inside the narrow mobile WebView instead of clipping
+          the right-most columns against the rounded border. */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm min-w-[560px]">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left py-2 px-3">Name</th>
@@ -270,7 +268,7 @@ function AgentPerformanceReport({ limit = 50 }: { limit?: number }) {
               <th className="text-left py-2 px-3">Zone</th>
               <th className="text-left py-2 px-3">Status</th>
               <th className="text-right py-2 px-3">Rating</th>
-              <th className="text-right py-2 px-3">Jobs</th>
+              <th className="text-right py-2 pl-3 pr-4">Jobs</th>
             </tr>
           </thead>
           <tbody>
@@ -289,7 +287,7 @@ function AgentPerformanceReport({ limit = 50 }: { limit?: number }) {
                   </span>
                 </td>
                 <td className="py-2 px-3 text-right tabular-nums">⭐ {fmtRating(a.rating)}</td>
-                <td className="py-2 px-3 text-right tabular-nums">{a.total_jobs_completed ?? 0}</td>
+                <td className="py-2 pl-3 pr-4 text-right tabular-nums">{a.total_jobs_completed ?? 0}</td>
               </tr>
             ))}
           </tbody>

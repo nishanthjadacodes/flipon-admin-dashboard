@@ -679,8 +679,10 @@ function PayoutsTab({ canCreate, canApprove }: PayoutsTabProps) {
           No payout requests yet.
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
+        // overflow-x-auto so the 6-column table scrolls sideways in the
+        // narrow mobile WebView instead of clipping columns.
+        <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
             <thead className="bg-gray-50 border-b">
               <tr>
                 <th className="text-left py-2 px-3">Representative</th>
@@ -1117,7 +1119,10 @@ export default function Accounts({ userRole = 'finance_admin' }: AccountsProps) 
         </nav>
       </div>
 
-      <div>{body[tab]}</div>
+      {/* pb-24 keeps the last table/row clear of the phone's bottom
+          gesture bar when the dashboard runs inside the app WebView —
+          without it the final row sat flush against the screen edge. */}
+      <div className="pb-24">{body[tab]}</div>
     </div>
   );
 }

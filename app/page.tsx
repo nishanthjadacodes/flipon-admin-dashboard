@@ -14,7 +14,7 @@ import B2BPipeline from '@/components/B2BPipeline';
 import DocumentVault from '@/components/DocumentVault';
 import Accounts from '@/components/Accounts';
 import NotificationBanner from '@/components/NotificationBanner';
-import { dashboardAPI } from '@/utils/api';
+import { inboxAPI } from '@/utils/api';
 import { CAP, can, firstAllowedSection, ROLE_LIST, roleMeta, type Capability } from '@/utils/rbac';
 
 type SectionId =
@@ -57,14 +57,38 @@ interface SectionEntry {
   el: ReactElement;
 }
 
-interface PendingDocItem {
-  id: string;
-  status?: string;
-  service?: { name?: string };
-  agent?: { name?: string };
-  customer?: { name?: string };
+// One row from /notifications/inbox — drives the header bell dropdown.
+interface BellNotification {
+  id: string | number;
+  type: string;
+  title: string;
+  body?: string | null;
+  deep_link?: { route?: string; bookingId?: string; enquiryId?: string } | null;
+  seen_at?: string | null;
   created_at?: string;
 }
+
+// Type → emoji for the bell dropdown rows. Mirrors the top-down banner.
+const NOTIF_ICON: Record<string, string> = {
+  'booking.created': '📋',
+  'booking.assigned': '📋',
+  'enquiry.requested': '📝',
+  'quote.sent': '💼',
+};
+
+// Compact "time ago" label for bell rows — "just now", "5m ago", "3h ago".
+const timeAgo = (iso?: string): string => {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const diff = Date.now() - then;
+  if (diff < 60_000) return 'just now';
+  const m = Math.floor(diff / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<SectionId>('dashboard');
@@ -77,34 +101,8 @@ export default function Home() {
   // real list of pending actions so the admin can dive straight into a
   // specific booking instead of just landing on the orders tab.
   const [bellOpen, setBellOpen] = useState<boolean>(false);
-  const [bellItems, setBellItems] = useState<PendingDocItem[]>([]);
+  const [bellItems, setBellItems] = useState<BellNotification[]>([]);
   const [bellLoading, setBellLoading] = useState<boolean>(false);
-  // Booking IDs the admin has already seen in the bell dropdown. Stored
-  // in localStorage so the badge count stays decremented across page
-  // reloads. Background poll subtracts these from the pending count;
-  // when a NEW pending booking shows up (different id), it bumps the
-  // badge back up. Without this filter the badge kept showing the full
-  // backlog forever even though the admin had viewed the items.
-  const [seenBookingIds, setSeenBookingIds] = useState<Set<string>>(() => {
-    if (typeof window === 'undefined') return new Set();
-    try {
-      const raw = localStorage.getItem('admin_bell_seen_ids_v1');
-      const arr = raw ? JSON.parse(raw) : [];
-      return new Set(Array.isArray(arr) ? arr.map(String) : []);
-    } catch {
-      return new Set();
-    }
-  });
-  const persistSeen = (next: Set<string>): void => {
-    try {
-      // Cap at 500 IDs so localStorage doesn't grow unbounded — the
-      // oldest entries are silently dropped on overflow.
-      const arr = Array.from(next).slice(-500);
-      localStorage.setItem('admin_bell_seen_ids_v1', JSON.stringify(arr));
-    } catch {
-      /* quota exceeded — ignore */
-    }
-  };
 
   useEffect(() => {
     const checkMobile = (): void => setIsMobile(window.innerWidth < 768);
@@ -198,55 +196,39 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll the header badge count every 60s. Two-stage filter:
-  //   1. The first time the dashboard mounts in this session, we
-  //      auto-seed ALL currently-pending booking IDs into seenBookingIds.
-  //      This treats the existing backlog as "already seen" so the badge
-  //      shows 0 on a fresh dashboard open — admins were seeing badge=33
-  //      every time they opened the page despite no new orders coming
-  //      in, because the backlog persisted forever.
-  //   2. Subsequent polls only bump the badge for booking IDs that
-  //      AREN'T already in the seen set — i.e. genuinely new orders.
-  // Net: badge = "new orders since I opened the dashboard", not
-  // "everything in the pending queue".
-  const didSeedRef = useRef<boolean>(false);
+  // ─── Header-bell notifications ────────────────────────────────────
+  // The badge + dropdown are driven by the in-app inbox
+  // (/notifications/inbox) — the SAME source the top-down banner uses.
+  // The backend writes a `booking.created` row for every admin the
+  // moment a customer books, so a new order lights the bell badge
+  // within one poll cycle. `unread_count` is the badge; the
+  // notifications list (read + unread, newest first) is the dropdown.
+  // Polls every 60s and whenever the window regains focus.
   useEffect(() => {
     let cancelled = false;
     const pull = async (): Promise<void> => {
       try {
-        const data = await dashboardAPI.getPendingDocumentation();
-        const list = Array.isArray(data) ? (data as PendingDocItem[]) : [];
+        const res = await inboxAPI.list();
         if (cancelled) return;
-
-        if (!didSeedRef.current) {
-          // First poll of this dashboard session — silently mark every
-          // current pending booking as "already seen" so the backlog
-          // doesn't spam the badge. New bookings created AFTER this
-          // moment will pass the filter and bump the count.
-          didSeedRef.current = true;
-          setSeenBookingIds((prev) => {
-            const next2 = new Set(prev);
-            list.forEach((b) => next2.add(String(b.id)));
-            persistSeen(next2);
-            return next2;
-          });
-          setNotifications(0);
-          return;
-        }
-
-        const unseen = list.filter((b) => !seenBookingIds.has(String(b.id)));
-        setNotifications(unseen.length);
+        const list = Array.isArray(res?.notifications)
+          ? (res.notifications as BellNotification[])
+          : [];
+        setBellItems(list);
+        setNotifications(Number(res?.unread_count) || 0);
       } catch {
-        // leave existing value
+        // backend asleep / not authed yet — keep last good values
       }
     };
     pull();
     const t = setInterval(pull, 60_000);
+    const onFocus = (): void => { void pull(); };
+    window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
       clearInterval(t);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [seenBookingIds]);
+  }, []);
 
   // When the role changes, send the user away from any section they can no
   // longer see. Also reset visited tabs so forbidden sections aren't kept in
@@ -370,38 +352,31 @@ export default function Home() {
                 ))}
               </select>
 
-              {/* Bell + dropdown — click toggles a small notification panel
-                  showing the actual list of pending bookings (so the admin
-                  doesn't blindly land on the orders tab; they can pick a
-                  specific booking to action). Click outside / on backdrop
-                  closes the panel. Bell is keyboard-accessible. */}
+              {/* Bell + dropdown — the badge and list are driven by the
+                  in-app notification inbox. A new customer booking writes
+                  a `booking.created` row for every admin, so it lights the
+                  badge here and shows in the dropdown. Tap a row to mark it
+                  read and jump to the relevant section; click outside to
+                  close. Bell is keyboard-accessible. */}
               <div className="relative">
                 <button
                   onClick={async () => {
                     const next = !bellOpen;
                     setBellOpen(next);
                     if (next) {
-                      // Fetch fresh list each time the dropdown opens.
-                      // 60-second poll keeps the badge count live but the
-                      // bookings list could be stale, so refetch on open.
+                      // Refetch on open so the list is fresh — the 60s
+                      // poll keeps the badge live but the list could be
+                      // up to a minute stale.
                       setBellLoading(true);
                       try {
-                        const data = await dashboardAPI.getPendingDocumentation();
-                        const items = Array.isArray(data) ? (data as PendingDocItem[]) : [];
-                        setBellItems(items);
-                        // Mark every booking the admin is now seeing as
-                        // "seen". Clear the badge immediately; future
-                        // polls will only re-add IDs that show up for
-                        // the first time (new bookings).
-                        setSeenBookingIds((prev) => {
-                          const next2 = new Set(prev);
-                          items.forEach((it) => next2.add(String(it.id)));
-                          persistSeen(next2);
-                          return next2;
-                        });
-                        setNotifications(0);
+                        const res = await inboxAPI.list();
+                        const list = Array.isArray(res?.notifications)
+                          ? (res.notifications as BellNotification[])
+                          : [];
+                        setBellItems(list);
+                        setNotifications(Number(res?.unread_count) || 0);
                       } catch {
-                        setBellItems([]);
+                        /* keep whatever the background poll last loaded */
                       } finally {
                         setBellLoading(false);
                       }
@@ -434,11 +409,32 @@ export default function Home() {
                       className="absolute right-0 mt-2 w-80 sm:w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50"
                       role="menu"
                     >
-                      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-2">
                         <h3 className="font-semibold text-gray-900 text-sm">Notifications</h3>
-                        <span className="text-xs text-gray-500">
-                          {bellItems.length} pending
-                        </span>
+                        {notifications > 0 ? (
+                          <button
+                            onClick={async () => {
+                              // Optimistically clear locally, then persist.
+                              setBellItems((prev) =>
+                                prev.map((it) => ({
+                                  ...it,
+                                  seen_at: it.seen_at || new Date().toISOString(),
+                                })),
+                              );
+                              setNotifications(0);
+                              try {
+                                await inboxAPI.markAllRead();
+                              } catch {
+                                /* badge already cleared locally */
+                              }
+                            }}
+                            className="text-xs font-semibold text-blue-600 hover:underline"
+                          >
+                            Mark all read
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-400">All read</span>
+                        )}
                       </div>
 
                       <div className="max-h-80 overflow-y-auto">
@@ -448,41 +444,72 @@ export default function Home() {
                           </div>
                         ) : bellItems.length === 0 ? (
                           <div className="p-6 text-center text-sm text-gray-500">
-                            🎉 All caught up — no pending actions.
+                            🎉 All caught up — no notifications.
                           </div>
                         ) : (
-                          bellItems.slice(0, 8).map((b) => (
-                            <button
-                              key={b.id}
-                              onClick={() => {
-                                setBellOpen(false);
-                                window.dispatchEvent(
-                                  new CustomEvent('admin:navigate', {
-                                    detail: { section: 'orders', orderId: b.id },
-                                  }),
-                                );
-                              }}
-                              className="w-full text-left px-4 py-3 border-b border-gray-50 last:border-b-0 hover:bg-gray-50 transition-colors"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {b.service?.name || 'Service booking'}
-                                  </p>
-                                  <p className="text-xs text-gray-600 truncate mt-0.5">
-                                    {b.customer?.name || 'Customer'}
-                                    {b.agent?.name ? ` · Rep: ${b.agent.name}` : ' · Unassigned'}
-                                  </p>
+                          bellItems.slice(0, 12).map((n) => {
+                            const unread = !n.seen_at;
+                            return (
+                              <button
+                                key={n.id}
+                                onClick={async () => {
+                                  setBellOpen(false);
+                                  if (unread) {
+                                    setBellItems((prev) =>
+                                      prev.map((it) =>
+                                        it.id === n.id
+                                          ? { ...it, seen_at: new Date().toISOString() }
+                                          : it,
+                                      ),
+                                    );
+                                    setNotifications((c) => Math.max(0, c - 1));
+                                    try {
+                                      await inboxAPI.markRead(n.id);
+                                    } catch {
+                                      /* local state already updated */
+                                    }
+                                  }
+                                  const route = n.deep_link?.route;
+                                  if (route) {
+                                    window.dispatchEvent(
+                                      new CustomEvent('admin:navigate', {
+                                        detail: {
+                                          section: route,
+                                          orderId: n.deep_link?.bookingId,
+                                          enquiryId: n.deep_link?.enquiryId,
+                                        },
+                                      }),
+                                    );
+                                  }
+                                }}
+                                className={`w-full text-left px-4 py-3 border-b border-gray-50 last:border-b-0 hover:bg-gray-50 transition-colors ${
+                                  unread ? 'bg-blue-50/50' : ''
+                                }`}
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  <span className="text-lg leading-none mt-0.5">
+                                    {NOTIF_ICON[n.type] || '🔔'}
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-semibold text-gray-900 truncate">
+                                      {n.title}
+                                    </p>
+                                    {n.body ? (
+                                      <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">
+                                        {n.body}
+                                      </p>
+                                    ) : null}
+                                    <p className="text-[11px] text-gray-400 mt-1">
+                                      {timeAgo(n.created_at)}
+                                    </p>
+                                  </div>
+                                  {unread && (
+                                    <span className="shrink-0 w-2 h-2 rounded-full bg-red-500 mt-1.5" />
+                                  )}
                                 </div>
-                                <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-800 capitalize">
-                                  {(b.status || 'pending').replace('_', ' ')}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-gray-400 mt-1 font-mono">
-                                #{String(b.id).slice(0, 8)}
-                              </p>
-                            </button>
-                          ))
+                              </button>
+                            );
+                          })
                         )}
                       </div>
 

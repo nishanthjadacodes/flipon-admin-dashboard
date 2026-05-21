@@ -172,6 +172,16 @@ export const roleMeta = (role: string): RoleSpec =>
 export const can = (role: string, capability: Capability | undefined): boolean => {
   const spec = ROLES[role as Role];
   if (!spec || !capability) return false;
+  // `scope.*` capabilities are RESTRICTIONS, not granted permissions —
+  // e.g. SCOPE_B2B_ONLY means "this role only sees B2B data". The '*'
+  // wildcard means "all permissions / no restrictions", so it must NOT
+  // imply a scope flag: otherwise Super Admin would be wrongly scoped to
+  // B2B-only and miss every B2C order in Order Management / Reports /
+  // Dashboard. A scope flag counts ONLY when literally listed in the
+  // role's caps (so b2b_admin stays B2B-scoped, super_admin does not).
+  if (capability.startsWith('scope.')) {
+    return spec.caps.includes(capability);
+  }
   if (spec.caps.includes('*')) return true;
   return spec.caps.includes(capability);
 };

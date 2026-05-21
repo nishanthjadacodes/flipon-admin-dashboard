@@ -3,6 +3,8 @@
 // the JWT check so the admin panel works without a login screen while we
 // iterate. Once real admin auth ships, reintroduce a token layer here.
 
+import { saveTextFile } from './csv';
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || 'https://flipon-backend.onrender.com/api';
 
@@ -517,14 +519,19 @@ export const vaultAPI = {
   delete: (id: string): Promise<unknown> => apiRequest(`/vault/${id}`, { method: 'DELETE' }),
 };
 
-// ─── In-app inbox (top-down notification banner) ─────────────────────────
+// ─── In-app inbox (top-down notification banner + header bell) ───────────
 export const inboxAPI = {
   // GET unread notifications for the current admin. Drives the top-down
   // banner that pops on dashboard load.
   unread: (): Promise<{ notifications: any[]; unread_count: number }> =>
     apiRequest('/notifications/inbox?unread_only=true&limit=10'),
+  // GET recent notifications (read + unread) for the header bell
+  // dropdown. The response also carries unread_count, which drives the
+  // bell badge — so a new `booking.created` row lights the bell.
+  list: (): Promise<{ notifications: any[]; unread_count: number }> =>
+    apiRequest('/notifications/inbox?limit=20'),
   // Mark a single notification seen — called when the user taps or
-  // dismisses the banner.
+  // dismisses the banner, or taps a bell-dropdown row.
   markRead: (id: string | number): Promise<unknown> =>
     apiRequest(`/notifications/${id}/read`, { method: 'POST' }),
   markAllRead: (): Promise<unknown> =>
@@ -561,31 +568,25 @@ export const adminAPI = {
     downloadFile('/admin/exports/agents', 'flipone-agents-export'),
 };
 
-// Download helper — fetches an endpoint as a Blob and triggers the
-// browser's Save-As. Used by Global Exports. Errors propagate so the
-// caller can show a toast on failure.
+// Download helper — fetches an endpoint as text and hands it to
+// saveTextFile, which does a normal browser Save-As OR (inside the
+// customer app's WebView) forwards to the native share sheet. The
+// old code read the response as a Blob + `<a download>`, which
+// silently did nothing inside the Android WebView.
 const downloadFile = async (endpoint: string, baseName: string): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, { method: 'GET' });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     throw new Error(text || `Export failed (HTTP ${response.status})`);
   }
-  const blob = await response.blob();
+  const content = await response.text();
   // Try to honour the server-supplied filename in Content-Disposition,
   // else fall back to a stamped local one.
   const disposition = response.headers.get('Content-Disposition') || '';
   const match = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
   const stamp = new Date().toISOString().slice(0, 10);
   const filename = match?.[1] || `${baseName}-${stamp}.csv`;
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveTextFile(filename, content, 'text/csv;charset=utf-8');
 };
 
 export const healthAPI = {

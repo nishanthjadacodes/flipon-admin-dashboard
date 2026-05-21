@@ -34,6 +34,51 @@ export function toCsv<T extends object>(
   return `${header}\n${body}`;
 }
 
+// True when the dashboard is running inside the customer app's
+// React Native WebView (the Admin Dashboard tile on ModeSelect).
+const isInWebView = (): boolean =>
+  typeof window !== 'undefined' && !!(window as unknown as { ReactNativeWebView?: unknown }).ReactNativeWebView;
+
+/**
+ * Saves a text payload as a downloadable file.
+ *
+ * In a normal browser this does the standard Blob + `<a download>`
+ * trick. Inside the customer app's Android WebView that trick
+ * SILENTLY FAILS — Android WebView ignores `blob:` URLs and the
+ * `download` attribute, so the Export button appeared dead. When we
+ * detect the WebView we instead forward the content to the native
+ * side via `postMessage`; WebViewScreen writes the file and opens
+ * the OS share sheet so the user can save / send it.
+ */
+export function saveTextFile(
+  filename: string,
+  content: string,
+  mime = 'text/csv;charset=utf-8',
+): void {
+  if (!content) return;
+  const name = /\.[a-z0-9]+$/i.test(filename) ? filename : `${filename}.csv`;
+
+  if (isInWebView()) {
+    const bridge = (window as unknown as {
+      ReactNativeWebView: { postMessage: (m: string) => void };
+    }).ReactNativeWebView;
+    bridge.postMessage(
+      JSON.stringify({ type: 'DOWNLOAD_FILE', filename: name, content, mime }),
+    );
+    return;
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function downloadCsv<T extends object>(
   filename: string,
   rows: T[],
@@ -41,13 +86,5 @@ export function downloadCsv<T extends object>(
 ): void {
   const csv = toCsv(rows, columns);
   if (!csv) return;
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveTextFile(filename, csv, 'text/csv;charset=utf-8');
 }

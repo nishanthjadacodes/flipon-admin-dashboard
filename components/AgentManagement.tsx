@@ -136,6 +136,15 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [selected, setSelected] = useState<AgentRecord | null>(null);
 
+  // KYC documents for the currently-selected rep. Fetched from
+  // /kyc/admin/kyc/:agentId so an admin can REVIEW the actual
+  // Aadhaar / PAN / photo before approving — instead of approving
+  // blind. `null` = not loaded; `notSubmitted` = the rep never
+  // uploaded KYC docs.
+  const [kycDocs, setKycDocs] = useState<Record<string, any> | null>(null);
+  const [kycLoading, setKycLoading] = useState<boolean>(false);
+  const [kycNotSubmitted, setKycNotSubmitted] = useState<boolean>(false);
+
   // When the user taps "View & act", scroll the detail panel into
   // view. On mobile (single-column layout) it lives BELOW the agent
   // list, so without this the click felt like a no-op — state did
@@ -155,6 +164,40 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<boolean>(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  // Load the selected rep's KYC documents whenever the selection
+  // changes, so the detail panel can show what's actually been
+  // submitted before an admin approves.
+  useEffect(() => {
+    if (!selected?.id) {
+      setKycDocs(null);
+      setKycNotSubmitted(false);
+      return;
+    }
+    let cancelled = false;
+    setKycLoading(true);
+    setKycDocs(null);
+    setKycNotSubmitted(false);
+    agentsAPI
+      .getKycDetails(selected.id)
+      .then((res: any) => {
+        if (cancelled) return;
+        setKycDocs(res?.data || null);
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        // 404 = this rep never submitted KYC documents.
+        if (/not found|404/i.test(e?.message || '') || e?.status === 404) {
+          setKycNotSubmitted(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setKycLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
 
   // Per PDF: only super_admin can create/deactivate agents and verify KYC.
   // Operations Manager can monitor (duty/location) but not approve.
@@ -271,8 +314,8 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
     setActionBusy(true);
     setActionMsg(null);
     try {
-      // First try the formal KYC endpoint — works when the rep has actually
-      // submitted KYC docs (AgentKyc row exists).
+      // The formal KYC endpoint only succeeds when the rep has
+      // actually submitted KYC documents (an AgentKyc row exists).
       await agentsAPI.verifyKyc(agent.id, { status });
       mutateLocal(agent.id, {
         is_kyc_verified: status === 'verified',
@@ -280,29 +323,18 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
       });
       setActionMsg(`${agent.name}: KYC ${status}`);
     } catch (e: any) {
-      // Guest reps and reps that haven't uploaded docs return 404 from the
-      // formal endpoint. Fall back to a direct user-status flip so admins
-      // can still mark trusted reps as verified for assignment.
+      // 404 = the rep never uploaded KYC documents. We deliberately do
+      // NOT silently mark them verified here — that was the bug where
+      // "Verify KYC" flipped the badge to verified without any
+      // documents existing or being reviewed. Tell the admin to have
+      // the rep submit their documents first.
       const looksLikeMissing =
         /not found|404/i.test(e?.message || '') || e?.status === 404;
-      if (looksLikeMissing && status === 'verified') {
-        try {
-          await agentsAPI.setStatus(agent.id, {
-            is_active: true,
-            is_verified: true,
-            is_kyc_verified: true,
-          });
-          mutateLocal(agent.id, {
-            is_kyc_verified: true,
-            is_active: true,
-            kyc_verified_at: new Date().toISOString(),
-          });
-          setActionMsg(`${agent.name}: marked verified (no formal KYC submitted)`);
-          return;
-        } catch (e2: any) {
-          setActionMsg(`KYC update failed: ${e2.message}`);
-          return;
-        }
+      if (looksLikeMissing) {
+        setActionMsg(
+          `${agent.name} has not submitted any KYC documents yet — ask the representative to upload their Aadhaar / PAN / photo from the rep app before you can verify.`,
+        );
+        return;
       }
       setActionMsg(`KYC update failed: ${e.message}`);
     } finally {
@@ -555,10 +587,14 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                     {canKyc && !agent.is_kyc_verified && (
                       <button
                         disabled={actionBusy}
-                        onClick={() => handleVerifyKyc(agent, 'verified')}
+                        // Opens the detail panel (which loads + shows
+                        // the submitted KYC documents) instead of
+                        // verifying directly — an admin must review
+                        // the documents before approving.
+                        onClick={() => openAgent(agent)}
                         className="px-3 py-1 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700 disabled:opacity-50"
                       >
-                        Verify KYC
+                        Review KYC
                       </button>
                     )}
                   </div>
@@ -650,14 +686,69 @@ export default function AgentManagement({ userRole = 'super_admin' }: AgentManag
                   Submitted: {fmtDate(selected.kyc_submitted_at)} · Verified:{' '}
                   {fmtDate(selected.kyc_verified_at)}
                 </p>
+
+                {/* Submitted KYC documents — review these BEFORE
+                    approving. An admin should never verify KYC blind. */}
+                <div className="mb-4">
+                  {kycLoading && (
+                    <p className="text-xs text-gray-400">Loading KYC documents…</p>
+                  )}
+                  {!kycLoading && kycNotSubmitted && (
+                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                      ⚠ This representative has not submitted any KYC documents
+                      yet. They must upload Aadhaar / PAN / photo from the rep
+                      app before KYC can be verified.
+                    </div>
+                  )}
+                  {!kycLoading && kycDocs && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ['aadhaarFront', 'Aadhaar Front'],
+                        ['aadhaarBack', 'Aadhaar Back'],
+                        ['panCard', 'PAN Card'],
+                        ['profilePhoto', 'Photo'],
+                        ['addressProof', 'Address Proof'],
+                      ] as const).map(([key, label]) => {
+                        const doc = kycDocs[key];
+                        const url = doc?.file_url;
+                        return (
+                          <div
+                            key={key}
+                            className="border border-gray-200 rounded p-2 text-xs"
+                          >
+                            <div className="text-gray-500 mb-1">{label}</div>
+                            {url ? (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-blue-600 underline"
+                              >
+                                View document
+                              </a>
+                            ) : (
+                              <span className="text-gray-400">Not uploaded</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
                 {canKyc ? (
                   <div className="flex gap-2">
                     {!selected.is_kyc_verified ? (
                       <>
                         <button
-                          disabled={actionBusy}
+                          disabled={actionBusy || kycLoading || kycNotSubmitted}
                           onClick={() => handleVerifyKyc(selected, 'verified')}
-                          className="flex-1 px-3 py-2 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700 disabled:opacity-50"
+                          title={
+                            kycNotSubmitted
+                              ? 'Rep has not submitted KYC documents yet'
+                              : undefined
+                          }
+                          className="flex-1 px-3 py-2 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Approve KYC
                         </button>

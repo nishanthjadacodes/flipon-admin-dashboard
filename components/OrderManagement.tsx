@@ -328,25 +328,43 @@ function DocPreviewOverlay({
   );
 }
 
-// Short customer-facing reference code. Two paths:
+// Customer-facing booking ID. This MUST render identically to the
+// customer app — same "Flip#1004" the customer sees in My Bookings,
+// so support staff and customers are always talking about the same
+// reference. Mirrors src/utils/bookingId.ts → formatBookingId in
+// customerandroidapp 1:1. If you change the format there, change it
+// here too.
 //
-//   1. New bookings (since the booking_number floor moved to 1000):
-//      "FLP-1000", "FLP-1001", … — short, sequential, easy to read
-//      over the phone with a customer.
-//   2. Old bookings whose booking_number is absent: derive a 4-char
-//      hex slug from the UUID — e.g. "FLP-1F8F" from
-//      "1f8fe081-5cb3-…". Deterministic per booking, never collides
-//      across the realistic working set.
-//
-// `o.ref` still wins if the backend explicitly set one, so manual
-// overrides keep working.
-const refOf = (o: OrderRecord): string => {
-  if (o.ref) return o.ref;
-  if (o.booking_number != null && o.booking_number !== '') {
-    return `FLP-${o.booking_number}`;
+//   • Numeric booking_number → "Flip#" + 4-digit zero-padded.
+//     Numbers below 1000 are bumped by +1000 (legacy bookings
+//     created before the 1000-floor shipped) so 73 → Flip#1073.
+//   • No digits (raw UUID) → "Flip#" + first 4 alphanumerics, upper.
+const BOOKING_DISPLAY_FLOOR = 1000;
+const formatBookingId = (input: number | string | null | undefined): string => {
+  if (input == null) return '';
+  const raw = String(input).trim();
+  if (!raw) return '';
+  const digitMatch = raw.match(/(\d+)/);
+  if (digitMatch) {
+    const n = parseInt(digitMatch[1], 10);
+    if (!Number.isNaN(n)) {
+      const displayN = n < BOOKING_DISPLAY_FLOOR ? n + BOOKING_DISPLAY_FLOOR : n;
+      return `Flip#${String(displayN).padStart(4, '0')}`;
+    }
   }
-  const slug = String(o.id || '').replace(/-/g, '').slice(0, 4).toUpperCase();
-  return slug ? `FLP-${slug}` : 'FLP-—';
+  const fallback = raw.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
+  return fallback ? `Flip#${fallback}` : '';
+};
+
+// Resolves the booking's display ID. Uses booking_number (the same
+// field the customer app formats from) and falls back to the UUID —
+// always rendered through formatBookingId so it matches the app.
+const refOf = (o: OrderRecord): string => {
+  const seed =
+    o.booking_number != null && o.booking_number !== ''
+      ? o.booking_number
+      : o.id;
+  return formatBookingId(seed) || 'Flip#—';
 };
 const money = (n: unknown): string => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
