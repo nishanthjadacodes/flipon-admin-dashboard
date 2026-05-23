@@ -329,17 +329,18 @@ function DocPreviewOverlay({
 }
 
 // Customer-facing booking ID. This MUST render identically to the
-// customer app — same "Flip#1004" the customer sees in My Bookings,
+// customer app — same "FX#1004" the customer sees in My Bookings,
 // so support staff and customers are always talking about the same
 // reference. Mirrors src/utils/bookingId.ts → formatBookingId in
 // customerandroidapp 1:1. If you change the format there, change it
 // here too.
 //
-//   • Numeric booking_number → "Flip#" + 4-digit zero-padded.
-//     Numbers below 1000 are bumped by +1000 (legacy bookings
-//     created before the 1000-floor shipped) so 73 → Flip#1073.
-//   • No digits (raw UUID) → "Flip#" + first 4 alphanumerics, upper.
-const BOOKING_DISPLAY_FLOOR = 1000;
+//   • Numeric booking_number → "FX#" + 5-digit zero-padded.
+//     Numbers below 10000 are bumped by +10000 (legacy / short
+//     numbers) so the ID always reads as a clean 5-digit order
+//     number — 73 → FX#10073, 1003 → FX#11003.
+//   • No digits (raw UUID) → "FX#" + first 4 alphanumerics, upper.
+const BOOKING_DISPLAY_FLOOR = 10000;
 const formatBookingId = (input: number | string | null | undefined): string => {
   if (input == null) return '';
   const raw = String(input).trim();
@@ -349,11 +350,11 @@ const formatBookingId = (input: number | string | null | undefined): string => {
     const n = parseInt(digitMatch[1], 10);
     if (!Number.isNaN(n)) {
       const displayN = n < BOOKING_DISPLAY_FLOOR ? n + BOOKING_DISPLAY_FLOOR : n;
-      return `Flip#${String(displayN).padStart(4, '0')}`;
+      return `FX#${String(displayN).padStart(5, '0')}`;
     }
   }
   const fallback = raw.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
-  return fallback ? `Flip#${fallback}` : '';
+  return fallback ? `FX#${fallback}` : '';
 };
 
 // Resolves the booking's display ID. Uses booking_number (the same
@@ -364,7 +365,7 @@ const refOf = (o: OrderRecord): string => {
     o.booking_number != null && o.booking_number !== ''
       ? o.booking_number
       : o.id;
-  return formatBookingId(seed) || 'Flip#—';
+  return formatBookingId(seed) || 'FX#—';
 };
 const money = (n: unknown): string => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
@@ -858,6 +859,34 @@ export default function OrderManagement({ userRole = 'super_admin' }: OrderManag
     if (window.location.hash !== targetHash) {
       window.history.pushState({ section: 'orders', orderId: id }, '', targetHash);
     }
+  }, []);
+
+  // On mount, honour a #orders/<id> hash — lets the notification bell
+  // (and any deep link) open straight into a specific order's detail
+  // panel. Runs once; ongoing hash changes are handled by the popstate
+  // listener below.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const h = window.location.hash;
+    if (h.startsWith('#orders/')) {
+      const id = h.slice('#orders/'.length);
+      if (id) setSelectedId(id);
+    }
+  }, []);
+
+  // Open a specific order on the `admin:open-order` event — fired when
+  // the notification bell is clicked. The mount-effect above covers the
+  // case where this screen was just mounted; this listener covers the
+  // case where Order Management is ALREADY on screen (no fresh mount),
+  // so a notification tap still jumps straight to that order's detail.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onOpenOrder = (e: Event): void => {
+      const id = (e as CustomEvent<{ orderId?: string }>).detail?.orderId;
+      if (id) setSelectedId(id);
+    };
+    window.addEventListener('admin:open-order', onOpenOrder);
+    return () => window.removeEventListener('admin:open-order', onOpenOrder);
   }, []);
 
   useEffect(() => {

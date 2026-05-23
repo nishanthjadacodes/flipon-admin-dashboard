@@ -68,6 +68,26 @@ interface BellNotification {
   created_at?: string;
 }
 
+// Collapse duplicate notifications for the bell dropdown. The backend
+// can write several rows with identical content for one real event —
+// the customer app retrying a booking POST creates multiple bookings,
+// and the booking-created fan-out adds a row per admin. They all share
+// the same type|title|body, so without this the bell shows e.g.
+// "Mohammed requested Aadhaar DOB update" three times. Keep only the
+// newest of each content group (the inbox API returns newest-first) —
+// the same content-key dedup the top-down NotificationBanner uses.
+const dedupeNotifications = (list: BellNotification[]): BellNotification[] => {
+  const seen = new Set<string>();
+  const out: BellNotification[] = [];
+  for (const n of list) {
+    const key = `${n.type}|${n.title}|${n.body || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(n);
+  }
+  return out;
+};
+
 // Type → emoji for the bell dropdown rows. Mirrors the top-down banner.
 const NOTIF_ICON: Record<string, string> = {
   'booking.created': '📋',
@@ -103,6 +123,22 @@ export default function Home() {
   const [bellOpen, setBellOpen] = useState<boolean>(false);
   const [bellItems, setBellItems] = useState<BellNotification[]>([]);
   const [bellLoading, setBellLoading] = useState<boolean>(false);
+  // High-water mark — the timestamp the bell was last opened. The badge
+  // counts ONLY notifications created AFTER this, so once the admin
+  // opens the bell every older notification is acknowledged for good:
+  // the count can never resurrect (a later poll, a failed mark-read, or
+  // a duplicate row cannot bring an old one back). Persisted so it
+  // survives reloads; a ref so the 60s poll closure reads the latest.
+  const bellSeenAtRef = useRef<number>(
+    (() => {
+      if (typeof window === 'undefined') return 0;
+      try {
+        return Number(localStorage.getItem('flipone_admin_bell_seen_at')) || 0;
+      } catch {
+        return 0;
+      }
+    })(),
+  );
 
   useEffect(() => {
     const checkMobile = (): void => setIsMobile(window.innerWidth < 768);
@@ -159,9 +195,29 @@ export default function Home() {
 
   useEffect(() => {
     const handleNavigate = (e: Event): void => {
-      const detail = (e as CustomEvent<{ section?: string }>).detail;
+      const detail = (e as CustomEvent<{ section?: string; orderId?: string }>)
+        .detail;
       const section = detail?.section;
-      if (section) handleSetActive(section);
+      if (!section) return;
+      handleSetActive(section);
+      // A notification about a specific booking carries an orderId.
+      // Rewrite the hash to #orders/<id> AFTER handleSetActive (which
+      // sets a bare #orders) so OrderManagement opens that order's
+      // detail panel when it mounts — AND fire admin:open-order so it
+      // also opens when Order Management is ALREADY on screen (the
+      // hash mount-effect only runs on a fresh mount).
+      if (section === 'orders' && detail?.orderId && typeof window !== 'undefined') {
+        window.history.replaceState(
+          { section: 'orders', orderId: detail.orderId },
+          '',
+          `#orders/${detail.orderId}`,
+        );
+        window.dispatchEvent(
+          new CustomEvent('admin:open-order', {
+            detail: { orderId: detail.orderId },
+          }),
+        );
+      }
     };
     window.addEventListener('admin:navigate', handleNavigate);
     return () => window.removeEventListener('admin:navigate', handleNavigate);
@@ -210,11 +266,22 @@ export default function Home() {
       try {
         const res = await inboxAPI.list();
         if (cancelled) return;
-        const list = Array.isArray(res?.notifications)
-          ? (res.notifications as BellNotification[])
-          : [];
+        const list = dedupeNotifications(
+          Array.isArray(res?.notifications)
+            ? (res.notifications as BellNotification[])
+            : [],
+        );
         setBellItems(list);
-        setNotifications(Number(res?.unread_count) || 0);
+        // Badge = notifications created AFTER the bell was last opened
+        // (the high-water mark). Anything older was acknowledged when the
+        // admin opened the bell, so it can NEVER count again — the badge
+        // can't resurrect on a later poll, a failed mark-read, or a dupe.
+        setNotifications(
+          list.filter((n) => {
+            const t = n.created_at ? new Date(n.created_at).getTime() : 0;
+            return Number.isFinite(t) && t > bellSeenAtRef.current;
+          }).length,
+        );
       } catch {
         // backend asleep / not authed yet — keep last good values
       }
@@ -338,12 +405,12 @@ export default function Home() {
               <div className="min-w-0" />
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 flex-1">
               <select
                 value={userRole}
                 onChange={(e) => setUserRole(e.target.value)}
                 title="Preview the panel as a different role (RBAC simulation)"
-                className="text-xs sm:text-sm px-2 sm:px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="text-xs sm:text-sm px-2 sm:px-3 py-1.5 flex-1 min-w-[120px] border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               >
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r.id} value={r.id}>
@@ -370,11 +437,43 @@ export default function Home() {
                       setBellLoading(true);
                       try {
                         const res = await inboxAPI.list();
-                        const list = Array.isArray(res?.notifications)
-                          ? (res.notifications as BellNotification[])
-                          : [];
-                        setBellItems(list);
-                        setNotifications(Number(res?.unread_count) || 0);
+                        const list = dedupeNotifications(
+                          Array.isArray(res?.notifications)
+                            ? (res.notifications as BellNotification[])
+                            : [],
+                        );
+                        // Opening the bell counts as the admin having SEEN
+                        // every notification — mark them all read server-
+                        // side and clear the badge. This is what stops the
+                        // count resurrecting after the admin taps a
+                        // notification, navigates away and comes back:
+                        // nothing is left unread for a later poll to
+                        // re-count. (Per-row markRead couldn't do this —
+                        // the dedup hides the duplicate rows, so their ids
+                        // aren't available to mark individually.)
+                        // Advance the high-water mark — every current
+                        // notification is now acknowledged; only ones
+                        // created AFTER this moment count again, so the
+                        // badge can never climb back to an old value.
+                        const seenAt = Date.now();
+                        bellSeenAtRef.current = seenAt;
+                        try {
+                          localStorage.setItem(
+                            'flipone_admin_bell_seen_at',
+                            String(seenAt),
+                          );
+                        } catch {
+                          /* private mode / quota — in-memory ref still holds */
+                        }
+                        const hadUnread = list.some((n) => !n.seen_at);
+                        const nowIso = new Date().toISOString();
+                        setBellItems(
+                          list.map((n) => ({ ...n, seen_at: n.seen_at || nowIso })),
+                        );
+                        setNotifications(0);
+                        if (hadUnread) {
+                          inboxAPI.markAllRead().catch(() => {});
+                        }
                       } catch {
                         /* keep whatever the background poll last loaded */
                       } finally {
